@@ -25,11 +25,11 @@ type MyLinkedList struct {
 	size int
 }
 
-func NewMyLinkedList() MyLinkedList {
+func NewMyLinkedList() *MyLinkedList {
 	head := &Node{}
 	tail := &Node{}
 	head.next, tail.prev = tail, head
-	return MyLinkedList{
+	return &MyLinkedList{
 		head: head,
 		tail: tail,
 		size: 0,
@@ -98,9 +98,9 @@ func (m *MyLinkedList) AddAtIndex(index int, val int) {
 	m.size++
 }
 
-func (m *MyLinkedList) DeleteAtIndex(index int) {
+func (m *MyLinkedList) DeleteAtIndex(index int) int {
 	if m.size == 0 || index < 0 || index >= m.size {
-		return
+		return -1
 	}
 	del := m.head.next
 	for i := 0; i < index; i++ {
@@ -117,6 +117,10 @@ func (m *MyLinkedList) DeleteAtIndex(index int) {
 
 	del.prev = nil
 	del.next = nil
+	return del.val
+}
+func (m *MyLinkedList) Size() int {
+	return m.size
 }
 
 func (m *MyLinkedList) Display() {
@@ -136,7 +140,7 @@ func (m *MyLinkedList) Display() {
 	fmt.Printf("size=%d 前序遍历：%v 后序遍历：%v\n", m.size, arr1, arr2)
 }
 
-func main() {
+func _main() {
 	list := NewMyLinkedList()
 	list.Display()
 
