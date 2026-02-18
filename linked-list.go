@@ -5,6 +5,13 @@ import "fmt"
 // 双链表实现：
 // 🌟技巧1：设置虚拟头节点和尾节点
 // 🌟技巧2: 新增节点可先设置prev、next，没有副作用，已有节点修改prev、next时需注意先后顺序
+// 0、func NewMyLinkedList() *MyLinkedList
+// 1、func (m *MyLinkedList) Get(index int) int
+// 2、func (m *MyLinkedList) AddAtHead(val int)
+// 3、func (m *MyLinkedList) AddAtTail(val int)
+// 4、func (m *MyLinkedList) AddAtIndex(index int, val int)
+// 5、func (m *MyLinkedList) DeleteAtIndex(index int)
+// 6、func (m *MyLinkedList) Display()
 
 type Node struct {
 	val  int
@@ -18,12 +25,15 @@ type MyLinkedList struct {
 	size int
 }
 
-func Constructor() MyLinkedList {
+func NewMyLinkedList() MyLinkedList {
 	head := &Node{}
 	tail := &Node{}
-	head.next = tail
-	tail.prev = head
-	return MyLinkedList{head: head, tail: tail, size: 0}
+	head.next, tail.prev = tail, head
+	return MyLinkedList{
+		head: head,
+		tail: tail,
+		size: 0,
+	}
 }
 
 func (m *MyLinkedList) Get(index int) int {
@@ -38,26 +48,22 @@ func (m *MyLinkedList) Get(index int) int {
 }
 
 func (m *MyLinkedList) AddAtHead(val int) {
-	next := m.head.next
-
 	newNode := &Node{val: val}
 	newNode.prev = m.head
-	newNode.next = next
+	newNode.next = m.head.next
 
+	m.head.next.prev = newNode
 	m.head.next = newNode
-	next.prev = newNode
 
 	m.size++
 }
 
 func (m *MyLinkedList) AddAtTail(val int) {
-	prev := m.tail.prev
-
 	newNode := &Node{val: val}
-	newNode.prev = prev
+	newNode.prev = m.tail.prev
 	newNode.next = m.tail
 
-	prev.next = newNode
+	m.tail.prev.next = newNode
 	m.tail.prev = newNode
 
 	m.size++
@@ -68,18 +74,15 @@ func (m *MyLinkedList) AddAtIndex(index int, val int) {
 		return
 	}
 
-	// 在头节点添加
 	if index == 0 {
 		m.AddAtHead(val)
 		return
 	}
-	// 在尾节点添加
 	if index == m.size {
 		m.AddAtTail(val)
 		return
 	}
 
-	// index=0(即头节点)，下面的for循环不生效(不特殊处理头节点‼️)
 	p := m.head.next
 	for i := 0; i < index-1; i++ {
 		p = p.next
@@ -89,18 +92,16 @@ func (m *MyLinkedList) AddAtIndex(index int, val int) {
 	newNode.prev = p
 	newNode.next = p.next
 
-	// index=size(即尾节点)，下面代码会panic(不特殊处理尾节点‼️)
+	p.next.prev = newNode
 	p.next = newNode
-	newNode.next.prev = newNode
 
 	m.size++
 }
 
 func (m *MyLinkedList) DeleteAtIndex(index int) {
-	if !(index >= 0 && index < m.size) {
+	if m.size == 0 || index < 0 || index >= m.size {
 		return
 	}
-
 	del := m.head.next
 	for i := 0; i < index; i++ {
 		del = del.next
@@ -113,22 +114,36 @@ func (m *MyLinkedList) DeleteAtIndex(index int) {
 	next.prev = prev
 
 	m.size--
+
+	del.prev = nil
+	del.next = nil
 }
 
 func (m *MyLinkedList) Display() {
-	fmt.Printf("size=%d, ", m.size)
+	var arr1 []int
 	p := m.head.next
-	for p != m.tail {
-		fmt.Printf("%v <-> ", p.val)
+	for p != nil && p != m.tail {
+		arr1 = append(arr1, p.val)
 		p = p.next
 	}
-	fmt.Println("null")
+
+	var arr2 []int
+	q := m.tail.prev
+	for q != nil && q != m.head {
+		arr2 = append(arr2, q.val)
+		q = q.prev
+	}
+	fmt.Printf("size=%d 前序遍历：%v 后序遍历：%v\n", m.size, arr1, arr2)
 }
 
 func main() {
-	//["MyLinkedList","addAtIndex","addAtIndex","addAtIndex","get"]
-	//[[],[0,10],[0,20],[1,30],[0]]
-	list := Constructor()
+	list := NewMyLinkedList()
+	list.Display()
+
+	list.AddAtHead(100)
+	list.AddAtHead(200)
+	list.AddAtHead(300)
+	list.Display()
 
 	list.AddAtIndex(0, 10)
 	list.Display()
@@ -141,5 +156,19 @@ func main() {
 
 	val := list.Get(0)
 	fmt.Println("期望是20，实际是：", val)
+
+	list.AddAtTail(400)
+	list.AddAtTail(500)
+	list.AddAtTail(600)
+	list.Display()
+
+	list.DeleteAtIndex(0)
+	list.Display()
+
+	list.DeleteAtIndex(5)
+	list.Display()
+
+	list.DeleteAtIndex(0)
+	list.Display()
 
 }
