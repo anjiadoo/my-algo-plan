@@ -2,6 +2,22 @@ package main
 
 import "fmt"
 
+// 链式队列和栈实现（基于MyLinkedList双链表）：
+// 队列：
+// 0、func NewMyLinkedQueue() *MyLinkedQueue
+// 1、func (q *MyLinkedQueue) Push(val int)
+// 2、func (q *MyLinkedQueue) Pop() int
+// 3、func (q *MyLinkedQueue) Peek() int
+// 4、func (q *MyLinkedQueue) Size() int
+// 5、func (q *MyLinkedQueue) Display()
+// 栈：
+// 6、func NewMyLinkedStack() *MyLinkedStack
+// 7、func (s *MyLinkedStack) Push(val int)
+// 8、func (s *MyLinkedStack) Pop() int
+// 9、func (s *MyLinkedStack) Peek() int
+// 10、func (s *MyLinkedStack) Size() int
+// 11、func (s *MyLinkedStack) Display()
+
 // MyLinkedQueue 链式队列
 type MyLinkedQueue struct {
 	list *MyLinkedList

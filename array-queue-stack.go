@@ -2,6 +2,24 @@ package main
 
 import "fmt"
 
+// 数组队列和栈实现（使用泛型）：
+// 🌟技巧1：队列出队用切片重新分配 q.queue[1:]，简单直观
+// 🌟技巧2：栈用append入栈，出栈取最后一个元素后缩减切片，利用slice的动态特性
+// 队列：
+// 0、func NewMyArrayQueue[T any]() *MyArrayQueue[T]
+// 1、func (q *MyArrayQueue[T]) Push(val T)
+// 2、func (q *MyArrayQueue[T]) Pop() T
+// 3、func (q *MyArrayQueue[T]) Peek() T
+// 4、func (q *MyArrayQueue[T]) Size() int
+// 5、func (q *MyArrayQueue[T]) Display()
+// 栈：
+// 6、func NewMyArrayStack[T any]() *MyArrayStack[T]
+// 7、func (s *MyArrayStack[T]) Push(val T)
+// 8、func (s *MyArrayStack[T]) Pop() T
+// 9、func (s *MyArrayStack[T]) Peek() T
+// 10、func (s *MyArrayStack[T]) Size() int
+// 11、func (s *MyArrayStack[T]) Display()
+
 type MyArrayQueue[T any] struct {
 	queue []T
 }
@@ -50,18 +68,29 @@ func NewMyArrayStack[T any]() *MyArrayStack[T] {
 	}
 }
 
-func (s *MyArrayStack[T]) Push(val T) {}
+func (s *MyArrayStack[T]) Push(val T) {
+	s.stack = append(s.stack, val)
+}
 
 func (s *MyArrayStack[T]) Pop() T {
-	return *new(T)
+	if s.Size() == 0 {
+		return *new(T)
+	}
+	e := s.stack[len(s.stack)-1]
+	s.stack = s.stack[:len(s.stack)-1]
+	return e
 }
 
 func (s *MyArrayStack[T]) Peek() T {
-	return *new(T)
+	if s.Size() == 0 {
+		return *new(T)
+	}
+	e := s.stack[len(s.stack)-1]
+	return e
 }
 
-func (s *MyArrayStack[T]) Size() T {
-	return *new(T)
+func (s *MyArrayStack[T]) Size() int {
+	return len(s.stack)
 }
 
 func (s *MyArrayStack[T]) Display() {

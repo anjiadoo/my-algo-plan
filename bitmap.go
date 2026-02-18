@@ -5,6 +5,16 @@ import (
 	"fmt"
 )
 
+// 位图（Bitmap）实现，用uint64切片高效存储比特位：
+// 🌟技巧1：一个uint64存储64个比特位，bucketIndex = num/64，bitIndex = num%64
+// 🌟技巧2：置位用 |=，清零用 &^=（Go按位清零），检查用 & != 0，都是O(1)操作
+// 🌟技巧3：相比bool切片，内存占用仅为1/8，适合海量数据的布尔标记场景
+// 0、func NewBitmap(maxNum int) (*Bitmap, error)
+// 1、func (b *Bitmap) set(num int) error
+// 2、func (b *Bitmap) clear(num int) error
+// 3、func (b *Bitmap) has(num int) (bool, error)
+// 4、func (b *Bitmap) count() int
+
 // Bitmap 位图结构，用uint64切片存储比特位
 type Bitmap struct {
 	bits []uint64 // 每个uint64存储64个比特位

@@ -5,12 +5,14 @@ import (
 )
 
 // 单链表实现：
-// 1、createListNode
-// 2、insertHeadNode
-// 3、insertTailNode
-// 4、insertIndexNode
-// 5、removeIndexNode
-// 6、printListNode
+// 🌟技巧1：头插法直接返回新节点作为新的head，避免单独处理空链表
+// 🌟技巧2：插入/删除时先找前一个节点（index-1位置），通过p.next操作目标节点
+// 0、func createListNode(array []int) *ListNode
+// 1、func insertHeadNode(head *ListNode, val int) *ListNode
+// 2、func insertTailNode(head *ListNode, val int)
+// 3、func insertIndexNode(head *ListNode, index, val int)
+// 4、func removeIndexNode(head *ListNode, index int) *ListNode
+// 5、func printListNode(head *ListNode)
 
 type ListNode struct {
 	val  int

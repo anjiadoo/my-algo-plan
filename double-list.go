@@ -2,13 +2,15 @@ package main
 
 import "fmt"
 
-// 双链表实现：
-// 1、createDListNode
-// 2、insertHeadNode2
-// 3、insertTailNode2
-// 4、insertIndexNode2
-// 5、removeIndexNode2
-// 6、printDListNode
+// 双链表实现（无虚拟头尾节点版）：
+// 🌟技巧1：新增节点可先设置prev、next，没有副作用，已有节点修改prev、next时需注意先后顺序
+// 🌟技巧2：删除节点时将prev和next置为nil，避免内存泄漏
+// 0、func createDListNode(array []int) *dListNode
+// 1、func insertHeadNode2(head *dListNode, val int) *dListNode
+// 2、func insertTailNode2(head *dListNode, val int)
+// 3、func insertIndexNode2(head *dListNode, index, val int)
+// 4、func removeIndexNode2(head *dListNode, index int) *dListNode
+// 5、func printDListNode(head *dListNode)
 
 type dListNode struct {
 	val  int
