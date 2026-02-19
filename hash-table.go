@@ -13,18 +13,28 @@ import (
 // 2、func (m *MyHashTable) Put(key, val int)
 // 3、func (m *MyHashTable) Remove(key int)
 // 4、func (m *MyHashTable) Display()
+// 5、func (m *MyHashTable) Keys() []int
+// 6、func (m *MyHashTable) Values() []int
 
 type KVNode struct {
 	key   int
 	value int
+	prev  *KVNode
+	next  *KVNode
 }
 
 type MyHashTable struct {
+	head  *KVNode
+	tail  *KVNode
 	table []*list.List
 }
 
 func NewMyHashTable(capacity int) *MyHashTable {
+	head, tail := &KVNode{}, &KVNode{}
+	head.next, tail.prev = tail, head
 	return &MyHashTable{
+		head:  head,
+		tail:  tail,
 		table: make([]*list.List, capacity),
 	}
 }
@@ -51,7 +61,15 @@ func (m *MyHashTable) Put(key, val int) {
 	hashCode := m.hash(key)
 	if m.table[hashCode] == nil {
 		m.table[hashCode] = list.New()
-		m.table[hashCode].PushFront(&KVNode{key, val})
+
+		node := &KVNode{key: key, value: val}
+		node.prev = m.tail.prev
+		node.next = m.tail
+
+		m.tail.prev.next = node
+		m.tail.prev = node
+
+		m.table[hashCode].PushFront(node)
 		return
 	}
 	for e := m.table[hashCode].Front(); e != nil; e = e.Next() {
@@ -62,7 +80,14 @@ func (m *MyHashTable) Put(key, val int) {
 		}
 	}
 	// 链表中没有目标 key，添加新节点
-	m.table[hashCode].PushFront(&KVNode{key: key, value: val})
+	node := &KVNode{key: key, value: val}
+	node.prev = m.tail.prev
+	node.next = m.tail
+
+	m.tail.prev.next = node
+	m.tail.prev = node
+
+	m.table[hashCode].PushFront(node)
 }
 
 func (m *MyHashTable) Remove(key int) {
@@ -73,11 +98,38 @@ func (m *MyHashTable) Remove(key int) {
 	for e := m.table[hashCode].Front(); e != nil; e = e.Next() {
 		node := e.Value.(*KVNode)
 		if node.key == key {
+			prev := node.prev
+			next := node.next
+
+			prev.next = next
+			next.prev = prev
+
 			m.table[hashCode].Remove(e)
 			break
 		}
 	}
 }
+
+func (m *MyHashTable) Keys() []int {
+	var keys []int
+	p := m.head.next
+	for p != nil {
+		keys = append(keys, p.key)
+		p = p.next
+	}
+	return keys
+}
+
+func (m *MyHashTable) Values() []int {
+	var values []int
+	p := m.head.next
+	for p != nil {
+		values = append(values, p.value)
+		p = p.next
+	}
+	return values
+}
+
 func (m *MyHashTable) Display() {
 	for i := 0; i < len(m.table); i++ {
 		if m.table[i] == nil {
@@ -106,11 +158,13 @@ func main() {
 	hashTable.Put(5, 50)
 	hashTable.Put(9, 90)
 	hashTable.Display()
+	fmt.Println(hashTable.Keys(), hashTable.Values())
 
 	hashTable.Put(11, 100)
 	hashTable.Put(55, 500)
 	hashTable.Put(99, 900)
 	hashTable.Display()
+	fmt.Println(hashTable.Keys(), hashTable.Values())
 
 	fmt.Println(hashTable.Get(10))
 	fmt.Println(hashTable.Get(5))
@@ -118,4 +172,5 @@ func main() {
 	hashTable.Remove(100)
 	hashTable.Remove(1)
 	hashTable.Display()
+	fmt.Println(hashTable.Keys(), hashTable.Values())
 }
