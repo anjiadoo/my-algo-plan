@@ -8,6 +8,7 @@ import (
 // 哈希表实现（链地址法解决冲突）：
 // 🌟技巧1：hash函数用取模法 key % capacity，简单高效
 // 🌟技巧2：使用container/list标准双向链表作为桶，避免手写链表
+// 🌟技巧3：新增head/tail节点，把普通节点链接在一起形成一个双链表，就可以循序访问
 // 0、func NewMyHashTable(capacity int) *MyHashTable
 // 1、func (m *MyHashTable) Get(key int) (int, bool)
 // 2、func (m *MyHashTable) Put(key, val int)
@@ -19,13 +20,13 @@ import (
 type KVNode struct {
 	key   int
 	value int
-	prev  *KVNode
-	next  *KVNode
+	prev  *KVNode // 新增-链式哈希
+	next  *KVNode // 新增-链式哈希
 }
 
 type MyHashTable struct {
-	head  *KVNode
-	tail  *KVNode
+	head  *KVNode // 新增-链式哈希
+	tail  *KVNode // 新增-链式哈希
 	table []*list.List
 }
 
