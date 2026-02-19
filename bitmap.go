@@ -14,6 +14,7 @@ import (
 // 2、func (b *Bitmap) clear(num int) error
 // 3、func (b *Bitmap) has(num int) (bool, error)
 // 4、func (b *Bitmap) count() int
+// 5、func (b *Bitmap) dynamicSet(num int) error
 
 // Bitmap 位图结构，用uint64切片存储比特位
 type Bitmap struct {
@@ -34,7 +35,7 @@ func NewBitmap(maxNum int) (*Bitmap, error) {
 	}, nil
 }
 
-// set 置位：标记num存在
+// 置位：标记num存在
 func (b *Bitmap) set(num int) error {
 	if num < 0 || num >= b.size {
 		return errors.New("num超出位图范围")
@@ -45,18 +46,36 @@ func (b *Bitmap) set(num int) error {
 	return nil
 }
 
-// clear 清零：标记num不存在
+func (b *Bitmap) dynamicSet(num int) error {
+	if num < 0 {
+		return errors.New("num必须是非负数")
+	}
+	// 计算需要的bucket数量
+	requiredBucket := num/64 + 1
+	// 扩容
+	if requiredBucket > len(b.bits) {
+		newBits := make([]uint64, requiredBucket)
+		copy(newBits, b.bits)
+		b.bits = newBits
+		b.size = requiredBucket * 64
+	}
+	return b.set(num)
+}
+
+// 清零：标记num不存在
 func (b *Bitmap) clear(num int) error {
 	if num < 0 || num >= b.size {
 		return errors.New("num超出位图范围")
 	}
 	bucketIndex := num / 64
 	bitIndex := uint(num % 64)
-	b.bits[bucketIndex] &^= 1 << bitIndex // 位运算置0（&^是Go的按位清零）
+
+	// 位运算置0（&^是Go的按位清零）
+	b.bits[bucketIndex] &^= 1 << bitIndex
 	return nil
 }
 
-// has 检查：判断num是否存在
+// 检查：判断num是否存在
 func (b *Bitmap) has(num int) (bool, error) {
 	if num < 0 || num >= b.size {
 		return false, errors.New("num超出位图范围")
@@ -67,7 +86,7 @@ func (b *Bitmap) has(num int) (bool, error) {
 	return (b.bits[bucketIndex] & (1 << bitIndex)) != 0, nil
 }
 
-// count 统计：计算已置位的数量（存在的数值个数）
+// 统计：计算已置位的数量（存在的数值个数）
 func (b *Bitmap) count() int {
 	count := 0
 	// 遍历每个uint64，统计其中1的个数
@@ -78,12 +97,12 @@ func (b *Bitmap) count() int {
 }
 
 // popcount 统计一个uint64中1的个数（内置函数优化）
-// 也可以用手写位运算，这里用Go内置的快速实现
 func popcount(x uint64) int {
 	if x == 0 {
 		return 0
 	}
-	return int(x&1) + popcount(x>>1) // 递归简化版，生产环境可用runtime.bits.OnesCount64
+	// 递归简化版，生产环境可用runtime.bits.OnesCount64
+	return int(x&1) + popcount(x>>1)
 }
 
 // 测试示例
