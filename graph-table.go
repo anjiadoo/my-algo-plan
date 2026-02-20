@@ -138,7 +138,10 @@ func traversePath(num int, graph Graph, src, dest int, onPath []bool, path []int
 	path = append(path, src)
 
 	for _, edge := range graph.Neighbors(src) {
-		traversePath(num, graph, edge.to, dest, onPath, path, res)
+		// 为每个分支创建独立的路径副本
+		newPath := make([]int, len(path))
+		copy(newPath, path)
+		traversePath(num, graph, edge.to, dest, onPath, newPath, res)
 	}
 
 	// 后序位置-撤销标记
