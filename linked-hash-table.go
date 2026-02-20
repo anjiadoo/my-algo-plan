@@ -8,14 +8,14 @@ import (
 // 哈希表实现（链地址法解决冲突）：
 // 🌟技巧1：hash函数用取模法 key % capacity，简单高效
 // 🌟技巧2：使用container/list标准双向链表作为桶，避免手写链表
-// 🌟技巧3：新增head/tail节点，把普通节点链接在一起形成一个双链表，就可以循序访问
-// 0、func NewMyHashTable(capacity int) *MyHashTable
-// 1、func (m *MyHashTable) Get(key int) (int, bool)
-// 2、func (m *MyHashTable) Put(key, val int)
-// 3、func (m *MyHashTable) Remove(key int)
-// 4、func (m *MyHashTable) Display()
-// 5、func (m *MyHashTable) Keys() []int
-// 6、func (m *MyHashTable) Values() []int
+// 🌟技巧3：新增head/tail节点，把普通节点链接在一起形成一个双链表，就可以顺序访问
+// 0、func NewMyLinkedHashTable(capacity int) *MyLinkedHashTable
+// 1、func (m *MyLinkedHashTable) Get(key int) (int, bool)
+// 2、func (m *MyLinkedHashTable) Put(key, val int)
+// 3、func (m *MyLinkedHashTable) Remove(key int)
+// 4、func (m *MyLinkedHashTable) Display()
+// 5、func (m *MyLinkedHashTable) Keys() []int
+// 6、func (m *MyLinkedHashTable) Values() []int
 
 type KVNode struct {
 	key   int
@@ -24,27 +24,27 @@ type KVNode struct {
 	next  *KVNode // 新增-链式哈希
 }
 
-type MyHashTable struct {
+type MyLinkedHashTable struct {
 	head  *KVNode // 新增-链式哈希
 	tail  *KVNode // 新增-链式哈希
 	table []*list.List
 }
 
-func NewMyHashTable(capacity int) *MyHashTable {
+func NewMyLinkedHashTable(capacity int) *MyLinkedHashTable {
 	head, tail := &KVNode{}, &KVNode{}
 	head.next, tail.prev = tail, head
-	return &MyHashTable{
+	return &MyLinkedHashTable{
 		head:  head,
 		tail:  tail,
 		table: make([]*list.List, capacity),
 	}
 }
 
-func (m *MyHashTable) hash(key int) int {
+func (m *MyLinkedHashTable) hash(key int) int {
 	return key % len(m.table)
 }
 
-func (m *MyHashTable) Get(key int) (int, bool) {
+func (m *MyLinkedHashTable) Get(key int) (int, bool) {
 	hashCode := m.hash(key)
 	if m.table[hashCode] == nil {
 		return -1, false
@@ -58,7 +58,7 @@ func (m *MyHashTable) Get(key int) (int, bool) {
 	return -1, false
 }
 
-func (m *MyHashTable) Put(key, val int) {
+func (m *MyLinkedHashTable) Put(key, val int) {
 	hashCode := m.hash(key)
 	if m.table[hashCode] == nil {
 		m.table[hashCode] = list.New()
@@ -91,7 +91,7 @@ func (m *MyHashTable) Put(key, val int) {
 	m.table[hashCode].PushFront(node)
 }
 
-func (m *MyHashTable) Remove(key int) {
+func (m *MyLinkedHashTable) Remove(key int) {
 	hashCode := m.hash(key)
 	if m.table[hashCode] == nil {
 		return
@@ -111,7 +111,7 @@ func (m *MyHashTable) Remove(key int) {
 	}
 }
 
-func (m *MyHashTable) Keys() []int {
+func (m *MyLinkedHashTable) Keys() []int {
 	var keys []int
 	p := m.head.next
 	for p != nil {
@@ -121,7 +121,7 @@ func (m *MyHashTable) Keys() []int {
 	return keys
 }
 
-func (m *MyHashTable) Values() []int {
+func (m *MyLinkedHashTable) Values() []int {
 	var values []int
 	p := m.head.next
 	for p != nil {
@@ -131,7 +131,7 @@ func (m *MyHashTable) Values() []int {
 	return values
 }
 
-func (m *MyHashTable) Display() {
+func (m *MyLinkedHashTable) Display() {
 	for i := 0; i < len(m.table); i++ {
 		if m.table[i] == nil {
 			continue
@@ -153,7 +153,7 @@ func (m *MyHashTable) Display() {
 }
 
 func main() {
-	hashTable := NewMyHashTable(10)
+	hashTable := NewMyLinkedHashTable(10)
 
 	hashTable.Put(1, 10)
 	hashTable.Put(5, 50)
