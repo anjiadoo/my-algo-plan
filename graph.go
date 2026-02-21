@@ -118,12 +118,12 @@ func levelOrderTraverseGraph2(graph Graph, s int) {
 // BFS 从s开始遍历图的所有节点，适配不同权重边的写法。
 func levelOrderTraverseGraph3(graph Graph, s int) {
 	type NodeState struct {
-		node int // 当前节点 ID
-		step int // 从起点 s 到当前节点的遍历步数
+		node   int // 当前节点 ID
+		weight int // 从起点 s 到当前节点的遍历步数
 	}
 
 	visited := make([]bool, graph.Size())
-	q := []*NodeState{{node: s, step: 0}}
+	q := []*NodeState{{node: s, weight: 0}}
 	visited[s] = true
 
 	for len(q) > 0 {
@@ -132,13 +132,13 @@ func levelOrderTraverseGraph3(graph Graph, s int) {
 			cur := q[0]
 			q = q[1:]
 
-			fmt.Printf("bfs: start [%d] visit [%d] at step %d\n", s, cur.node, cur.step)
+			fmt.Printf("bfs: start [%d] visit [%d] at weight %d\n", s, cur.node, cur.weight)
 
 			for _, e := range graph.Neighbors(cur.node) {
 				if visited[e.to] {
 					continue
 				}
-				q = append(q, &NodeState{node: e.to, step: cur.step + 1})
+				q = append(q, &NodeState{node: e.to, weight: cur.weight + e.weight})
 				visited[e.to] = true
 			}
 		}
@@ -182,16 +182,16 @@ func main() {
 		fmt.Printf("路径%d: %s\n", i+1, itr)
 	}
 
-	levelOrderTraverseGraph2(graph, 0)
+	levelOrderTraverseGraph3(graph, 0)
 
-	// 遍历节点
-	visited := make([]bool, num)
-	traverseGraph(num, graph, 0, visited)
-
-	// 遍历边
-	visitedEdge := make([][]bool, num)
-	for i := 0; i < num; i++ {
-		visitedEdge[i] = make([]bool, num)
-	}
-	traverseEdge(num, graph, 0, visitedEdge)
+	//// 遍历节点
+	//visited := make([]bool, num)
+	//traverseGraph(num, graph, 0, visited)
+	//
+	//// 遍历边
+	//visitedEdge := make([][]bool, num)
+	//for i := 0; i < num; i++ {
+	//	visitedEdge[i] = make([]bool, num)
+	//}
+	//traverseEdge(num, graph, 0, visitedEdge)
 }
