@@ -7,6 +7,7 @@ import (
 type WeightedDigraph struct {
 	// 邻接矩阵，matrix[from][to]存储从节点 from 到节点 to 的边的权重
 	// 0 表示没有连接
+	size   int
 	matrix [][]int // 有向加权图-邻接矩阵
 }
 
@@ -19,6 +20,7 @@ func NewWeightedDigraph(n int) *WeightedDigraph {
 		}
 	}
 	return &WeightedDigraph{
+		size:   n,
 		matrix: matrix,
 	}
 }
@@ -37,6 +39,10 @@ func (w *WeightedDigraph) HasEdge(from, to int) bool {
 
 func (w *WeightedDigraph) Weight(from, to int) int {
 	return w.matrix[from][to]
+}
+
+func (w *WeightedDigraph) Size() int {
+	return w.size
 }
 
 func (w *WeightedDigraph) Neighbors(v int) []*Edge {
@@ -97,6 +103,8 @@ func main() {
 	for i, itr := range res {
 		fmt.Printf("路径%d: %s\n", i+1, itr)
 	}
+
+	bfs(graph, 0)
 
 	//// 遍历节点
 	//visited := make([]bool, num)

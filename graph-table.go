@@ -7,6 +7,7 @@ type Graph interface {
 	RemoveEdge(from, to int)
 	HasEdge(from, to int) bool
 	Weight(from, to int) int
+	Size() int
 	Neighbors(v int) []*Edge
 	Display()
 }
@@ -22,11 +23,13 @@ type Edge struct {
 // 🌟技巧3：参数涉及到切片的，注意扩容带来的影响
 
 type MyWeightedDigraph struct {
+	size  int
 	graph [][]*Edge // 有向加权图-邻接表
 }
 
 func NewMyWeightedDigraph(n int) *MyWeightedDigraph {
 	return &MyWeightedDigraph{
+		size:  n,
 		graph: make([][]*Edge, n),
 	}
 }
@@ -60,6 +63,10 @@ func (m *MyWeightedDigraph) Weight(from, to int) int {
 		}
 	}
 	return -1
+}
+
+func (m *MyWeightedDigraph) Size() int {
+	return m.size
 }
 
 func (m *MyWeightedDigraph) Neighbors(v int) []*Edge {
@@ -144,6 +151,31 @@ func traversePath(num int, graph Graph, src, dest int, onPath []bool, path *[]in
 	// 后序位置-撤销标记
 	onPath[src] = false
 	*path = (*path)[:len(*path)-1]
+}
+
+// 从 s 开始 BFS 遍历图的所有节点，且记录遍历的步数
+func bfs(graph Graph, s int) {
+	visited := make([]bool, graph.Size())
+	q := []int{s}
+	visited[s] = true
+	// 记录从 s 开始走到当前节点的步数
+	step := 0
+	for len(q) > 0 {
+		sz := len(q)
+		for i := 0; i < sz; i++ {
+			cur := q[0]
+			q = q[1:]
+			fmt.Printf("visit %d at step %d\n", cur, step)
+			for _, e := range graph.Neighbors(cur) {
+				if visited[e.to] {
+					continue
+				}
+				q = append(q, e.to)
+				visited[e.to] = true
+			}
+		}
+		step++
+	}
 }
 
 func main1() {
