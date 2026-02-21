@@ -67,65 +67,32 @@ func (w *WeightedDigraph) Display() {
 	}
 }
 
-func main() {
+func main_() {
 	num := 10
 	graph := NewWeightedDigraph(num)
-	graph.AddEdge(0, 1, 1)
-	graph.AddEdge(0, 2, 2)
-	graph.AddEdge(0, 3, 3)
-	graph.AddEdge(1, 2, 12)
-	graph.AddEdge(1, 3, 13)
-	graph.AddEdge(1, 4, 14)
-	graph.AddEdge(2, 3, 23)
-	graph.AddEdge(2, 4, 24)
-	graph.AddEdge(2, 5, 25)
-	graph.AddEdge(3, 4, 34)
-	graph.AddEdge(3, 5, 35)
-	graph.AddEdge(4, 5, 45)
-	graph.AddEdge(4, 6, 46)
-	graph.AddEdge(5, 6, 56)
-	graph.AddEdge(5, 7, 57)
-	graph.AddEdge(6, 7, 67)
-	graph.AddEdge(6, 8, 68)
-	graph.AddEdge(7, 8, 78)
-	graph.AddEdge(7, 9, 79)
-	graph.AddEdge(8, 9, 89)
-	graph.AddEdge(8, 0, 80)
-	graph.AddEdge(9, 0, 90)
-	graph.AddEdge(9, 1, 91)
+	graph.AddEdge(0, 1, 10)
+	graph.AddEdge(0, 2, 10)
+	graph.AddEdge(0, 4, 10)
+	graph.AddEdge(1, 3, 20)
+	graph.AddEdge(1, 4, 20)
+	graph.AddEdge(1, 5, 20)
+	graph.AddEdge(2, 5, 30)
+	graph.AddEdge(2, 3, 30)
+	graph.AddEdge(2, 4, 30)
+	graph.AddEdge(3, 4, 40)
+	graph.AddEdge(4, 5, 50)
+	graph.AddEdge(5, 1, 60)
 	graph.Display()
 
-	// 遍历所有路径
-	onPath := make([]bool, num)
-	var path []int
-	var res []string
-	traversePath(num, graph, 5, 9, onPath, &path, &res)
-	for i, itr := range res {
-		fmt.Printf("路径%d: %s\n", i+1, itr)
+	fmt.Println(graph.HasEdge(0, 1))
+	fmt.Println(graph.HasEdge(1, 0))
+
+	for _, edge := range graph.Neighbors(2) {
+		fmt.Printf("%d -> %d, weight: %d\n", edge.from, edge.to, edge.weight)
 	}
 
-	bfs(graph, 0)
-
-	//// 遍历节点
-	//visited := make([]bool, num)
-	//traverseGraph(num, graph, 0, visited)
-	//
-	//// 遍历边
-	//visitedEdge := make([][]bool, num)
-	//for i := 0; i < num; i++ {
-	//	visitedEdge[i] = make([]bool, num)
-	//}
-	//traverseEdge(num, graph, 0, visitedEdge)
-	//
-	//fmt.Println(graph.HasEdge(0, 1))
-	//fmt.Println(graph.HasEdge(1, 0))
-	//
-	//for _, edge := range graph.Neighbors(2) {
-	//	fmt.Printf("%d -> %d, weight: %d\n", edge.from, edge.to, edge.weight)
-	//}
-	//
-	//graph.RemoveEdge(0, 1)
-	//graph.RemoveEdge(0, 2)
-	//graph.RemoveEdge(0, 4)
-	//graph.Display()
+	graph.RemoveEdge(0, 1)
+	graph.RemoveEdge(0, 2)
+	graph.RemoveEdge(0, 4)
+	graph.Display()
 }

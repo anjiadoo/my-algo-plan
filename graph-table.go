@@ -2,22 +2,6 @@ package main
 
 import "fmt"
 
-type Graph interface {
-	AddEdge(from, to, weight int)
-	RemoveEdge(from, to int)
-	HasEdge(from, to int) bool
-	Weight(from, to int) int
-	Size() int
-	Neighbors(v int) []*Edge
-	Display()
-}
-
-type Edge struct {
-	from   int
-	to     int
-	weight int
-}
-
 // 🌟技巧1：把graph设置为 map[int][]Edge，可以动态添加新节点
 // 🌟技巧2：HasEdge/RemoveEdge/Weight方法遍历List可以优化，比如用map[int]map[int]int存储，就可以避免遍历List，复杂度能降到O(1)。
 // 🌟技巧3：参数涉及到切片的，注意扩容带来的影响
@@ -84,101 +68,7 @@ func (m *MyWeightedDigraph) Display() {
 	}
 }
 
-func traverseGraph(num int, graph Graph, v int, visited []bool) {
-	if v < 0 || v > num {
-		return
-	}
-	if visited[v] {
-		// 防止死循环
-		return
-	}
-
-	// 前序位置
-	visited[v] = true
-	fmt.Println("visit=", v)
-
-	for _, edge := range graph.Neighbors(v) {
-		traverseGraph(num, graph, edge.to, visited)
-	}
-}
-
-func traverseEdge(num int, graph Graph, v int, visited [][]bool) {
-	if v < 0 || v > num {
-		return
-	}
-	for _, edge := range graph.Neighbors(v) {
-		// 如果边已经被遍历过，则跳过
-		if visited[edge.from][edge.to] {
-			return
-		}
-
-		// 标记并访问边
-		visited[edge.from][edge.to] = true
-		fmt.Printf("edge:%d->%d\n", edge.from, edge.to)
-
-		traverseEdge(num, graph, edge.to, visited)
-	}
-}
-
-func traversePath(num int, graph Graph, src, dest int, onPath []bool, path *[]int, res *[]string) {
-	if src < 0 || src > num || dest < 0 || dest > num {
-		return
-	}
-
-	// 防止死循环（成环）
-	if onPath[src] {
-		return
-	}
-
-	// 找到目标节点
-	if src == dest {
-		sPath := fmt.Sprintf("长度%d, path=", len(*path)+1)
-		for i := 0; i < len(*path); i++ {
-			sPath += fmt.Sprintf("%d->", (*path)[i])
-		}
-		*res = append(*res, sPath+fmt.Sprintf("%d", dest))
-		return
-	}
-
-	// 前序位置-标记
-	onPath[src] = true
-	*path = append(*path, src)
-
-	for _, edge := range graph.Neighbors(src) {
-		traversePath(num, graph, edge.to, dest, onPath, path, res)
-	}
-
-	// 后序位置-撤销标记
-	onPath[src] = false
-	*path = (*path)[:len(*path)-1]
-}
-
-// 从 s 开始 BFS 遍历图的所有节点，且记录遍历的步数
-func bfs(graph Graph, s int) {
-	visited := make([]bool, graph.Size())
-	q := []int{s}
-	visited[s] = true
-	// 记录从 s 开始走到当前节点的步数
-	step := 0
-	for len(q) > 0 {
-		sz := len(q)
-		for i := 0; i < sz; i++ {
-			cur := q[0]
-			q = q[1:]
-			fmt.Printf("visit %d at step %d\n", cur, step)
-			for _, e := range graph.Neighbors(cur) {
-				if visited[e.to] {
-					continue
-				}
-				q = append(q, e.to)
-				visited[e.to] = true
-			}
-		}
-		step++
-	}
-}
-
-func main1() {
+func main__() {
 	num := 6
 	graph := NewMyWeightedDigraph(num)
 	graph.AddEdge(0, 1, 10)
@@ -194,17 +84,6 @@ func main1() {
 	graph.AddEdge(4, 5, 50)
 	graph.AddEdge(5, 1, 60)
 	graph.Display()
-
-	// 遍历节点
-	visited := make([]bool, num)
-	traverseGraph(num, graph, 0, visited)
-
-	// 遍历边
-	visitedEdge := make([][]bool, num)
-	for i := 0; i < num; i++ {
-		visitedEdge[i] = make([]bool, num)
-	}
-	traverseEdge(num, graph, 0, visitedEdge)
 
 	fmt.Println(graph.HasEdge(0, 1))
 	fmt.Println(graph.HasEdge(1, 0))
