@@ -113,7 +113,7 @@ func traverseEdge(num int, graph Graph, v int, visited [][]bool) {
 	}
 }
 
-func traversePath(num int, graph Graph, src, dest int, onPath []bool, path []int, res *[]string) {
+func traversePath(num int, graph Graph, src, dest int, onPath []bool, path *[]int, res *[]string) {
 	if src < 0 || src > num || dest < 0 || dest > num {
 		return
 	}
@@ -125,9 +125,9 @@ func traversePath(num int, graph Graph, src, dest int, onPath []bool, path []int
 
 	// 找到目标节点
 	if src == dest {
-		sPath := fmt.Sprintf("长度%d, path=", len(path)+1)
-		for i := 0; i < len(path); i++ {
-			sPath += fmt.Sprintf("%d->", path[i])
+		sPath := fmt.Sprintf("长度%d, path=", len(*path)+1)
+		for i := 0; i < len(*path); i++ {
+			sPath += fmt.Sprintf("%d->", (*path)[i])
 		}
 		*res = append(*res, sPath+fmt.Sprintf("%d", dest))
 		return
@@ -135,18 +135,15 @@ func traversePath(num int, graph Graph, src, dest int, onPath []bool, path []int
 
 	// 前序位置-标记
 	onPath[src] = true
-	path = append(path, src)
+	*path = append(*path, src)
 
 	for _, edge := range graph.Neighbors(src) {
-		// 为每个分支创建独立的路径副本
-		newPath := make([]int, len(path))
-		copy(newPath, path)
-		traversePath(num, graph, edge.to, dest, onPath, newPath, res)
+		traversePath(num, graph, edge.to, dest, onPath, path, res)
 	}
 
 	// 后序位置-撤销标记
 	onPath[src] = false
-	path = path[:len(path)-1]
+	*path = (*path)[:len(*path)-1]
 }
 
 func main1() {

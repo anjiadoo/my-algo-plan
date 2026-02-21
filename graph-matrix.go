@@ -93,7 +93,7 @@ func main() {
 	onPath := make([]bool, num)
 	var path []int
 	var res []string
-	traversePath(num, graph, 1, 9, onPath, path, &res)
+	traversePath(num, graph, 5, 9, onPath, &path, &res)
 	for i, itr := range res {
 		fmt.Printf("路径%d: %s\n", i+1, itr)
 	}
