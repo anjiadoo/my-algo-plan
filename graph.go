@@ -2,6 +2,14 @@ package main
 
 import "fmt"
 
+// 图算法实现：
+// 🌟技巧1：DFS遍历节点前必须先检查visited防止死循环，然后立即标记visited再访问（节点遍历）
+// 🌟技巧2：边遍历用二维数组visited[from][to]，同一方向只遍历一次，用判断后return而非continue（边遍历）
+// 🌟技巧3：找所有路径用onPath而非visited，前序位置add到path，后序位置pop出来（路径遍历）
+// 🌟技巧4：BFS用sz记录当前层的大小，每层循环结束后step++才能正确计算步数（BFS层次遍历）
+// 🌟技巧5：BFS入队时立即标记visited，而非出队时，防止同一节点被多次入队（BFS防重复）
+// 🌟技巧6：BFS带权重用state结构体存(node, weight)，入队时用累计weight（带权重BFS）
+
 type Graph interface {
 	AddEdge(from, to, weight int)
 	RemoveEdge(from, to int)
@@ -19,8 +27,15 @@ type Edge struct {
 }
 
 // DFS 遍历图的所有节点
-func traverseGraph(num int, graph Graph, v int, visited []bool) {
-	if v < 0 || v > num {
+func traverseGraph(graph Graph, v int, visited []bool) {
+	// 1、base case：检查节点边界
+	// 2、visited判断：防止重复访问
+	// 3、标记visited：记录当前节点已访问
+	// 4、访问节点：执行节点相关操作
+	// 5、for 循环 neighbors：遍历所有邻居节点
+	// 6、递归调用：对未访问的邻居进行DFS
+
+	if v < 0 || v >= graph.Size() {
 		return
 	}
 	if visited[v] {
@@ -33,13 +48,20 @@ func traverseGraph(num int, graph Graph, v int, visited []bool) {
 	fmt.Println("visit=", v)
 
 	for _, edge := range graph.Neighbors(v) {
-		traverseGraph(num, graph, edge.to, visited)
+		traverseGraph(graph, edge.to, visited)
 	}
 }
 
 // DFS 遍历图的所有边
-func traverseEdge(num int, graph Graph, v int, visited [][]bool) {
-	if v < 0 || v > num {
+func traverseEdge(graph Graph, v int, visited [][]bool) {
+	// 1、base case：检查节点边界
+	// 2、for 循环 neighbors：遍历所有出边
+	//   2.1 边是否已访问：检查visited[from][to]
+	//   2.2 标记边：visited[from][to] = true
+	//   2.3 访问边：执行边相关操作
+	//   2.4 递归调用：对目标节点继续遍历
+
+	if v < 0 || v >= graph.Size() {
 		return
 	}
 	for _, edge := range graph.Neighbors(v) {
@@ -52,13 +74,21 @@ func traverseEdge(num int, graph Graph, v int, visited [][]bool) {
 		visited[edge.from][edge.to] = true
 		fmt.Printf("edge:%d->%d\n", edge.from, edge.to)
 
-		traverseEdge(num, graph, edge.to, visited)
+		traverseEdge(graph, edge.to, visited)
 	}
 }
 
 // DFS 遍历图的所有路径
-func traversePath(num int, graph Graph, src, dest int, onPath []bool, path *[]int, res *[]string) {
-	if src < 0 || src > num || dest < 0 || dest > num {
+func traversePath(graph Graph, src, dest int, onPath []bool, path *[]int, res *[]string) {
+	// 1、base case：检查节点边界
+	// 2、是否成环：检查onPath[src]防止循环
+	// 3、是否目标节点：src == dest时记录路径
+	// 4、前序位置-标记：onPath[src] = true, path追加src
+	// 5、for 循环 neighbors：遍历所有邻居
+	// 6、递归调用：继续寻找路径
+	// 7、后序位置-撤销：onPath[src] = false, path弹出src
+
+	if src < 0 || src >= graph.Size() || dest < 0 || dest >= graph.Size() {
 		return
 	}
 
@@ -82,7 +112,7 @@ func traversePath(num int, graph Graph, src, dest int, onPath []bool, path *[]in
 	*path = append(*path, src)
 
 	for _, edge := range graph.Neighbors(src) {
-		traversePath(num, graph, edge.to, dest, onPath, path, res)
+		traversePath(graph, edge.to, dest, onPath, path, res)
 	}
 
 	// 后序位置-撤销标记
@@ -92,6 +122,18 @@ func traversePath(num int, graph Graph, src, dest int, onPath []bool, path *[]in
 
 // BFS 从s开始遍历图的所有节点，且记录遍历的步数
 func levelOrderTraverseGraph2(graph Graph, s int) {
+	// 1、初始化：visited数组，队列，步数step=0
+	// 2、起点入队并标记：q=[s], visited[s]=true
+	// 3、while队列不为空：
+	//   3.1 记录当前层大小sz
+	//   3.2 遍历当前层所有节点：
+	//       3.2.1 出队当前节点
+	//       3.2.2 访问节点（可记录步数）
+	//       3.2.3 遍历邻居：
+	//           3.2.3.1 检查是否已访问
+	//           3.2.3.2 入队并标记visited
+	//   3.3 当前层处理完毕，step++
+
 	visited := make([]bool, graph.Size())
 	q := []int{s}
 	visited[s] = true
@@ -117,13 +159,13 @@ func levelOrderTraverseGraph2(graph Graph, s int) {
 
 // BFS 从s开始遍历图的所有节点，适配不同权重边的写法。
 func levelOrderTraverseGraph3(graph Graph, s int) {
-	type NodeState struct {
+	type state struct {
 		node   int // 当前节点 ID
 		weight int // 从起点 s 到当前节点的遍历步数
 	}
 
 	visited := make([]bool, graph.Size())
-	q := []*NodeState{{node: s, weight: 0}}
+	q := []*state{{node: s, weight: 0}}
 	visited[s] = true
 
 	for len(q) > 0 {
@@ -138,8 +180,8 @@ func levelOrderTraverseGraph3(graph Graph, s int) {
 				if visited[e.to] {
 					continue
 				}
-				q = append(q, &NodeState{node: e.to, weight: cur.weight + e.weight})
 				visited[e.to] = true
+				q = append(q, &state{node: e.to, weight: cur.weight + e.weight})
 			}
 		}
 	}
@@ -177,21 +219,21 @@ func main() {
 	onPath := make([]bool, num)
 	var path []int
 	var res []string
-	traversePath(num, graph, 5, 9, onPath, &path, &res)
+	traversePath(graph, 5, 9, onPath, &path, &res)
 	for i, itr := range res {
 		fmt.Printf("路径%d: %s\n", i+1, itr)
 	}
 
-	levelOrderTraverseGraph3(graph, 0)
+	levelOrderTraverseGraph3(graph, 4)
 
 	//// 遍历节点
 	//visited := make([]bool, num)
-	//traverseGraph(num, graph, 0, visited)
+	//traverseGraph(graph, 0, visited)
 	//
 	//// 遍历边
 	//visitedEdge := make([][]bool, num)
 	//for i := 0; i < num; i++ {
 	//	visitedEdge[i] = make([]bool, num)
 	//}
-	//traverseEdge(num, graph, 0, visitedEdge)
+	//traverseEdge(graph, 0, visitedEdge)
 }
