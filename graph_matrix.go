@@ -4,14 +4,14 @@ import (
 	"fmt"
 )
 
-type WeightedDigraph struct {
+type MyMatrixGraph struct {
 	// 邻接矩阵，matrix[from][to]存储从节点 from 到节点 to 的边的权重
 	// 0 表示没有连接
 	size   int
 	matrix [][]int // 有向加权图-邻接矩阵
 }
 
-func NewWeightedDigraph(n int) *WeightedDigraph {
+func NewMyMatrixGraph(n int) *MyMatrixGraph {
 	matrix := make([][]int, n)
 	for i := 0; i < n; i++ {
 		matrix[i] = make([]int, n)
@@ -19,33 +19,33 @@ func NewWeightedDigraph(n int) *WeightedDigraph {
 			matrix[i][j] = -1
 		}
 	}
-	return &WeightedDigraph{
+	return &MyMatrixGraph{
 		size:   n,
 		matrix: matrix,
 	}
 }
 
-func (w *WeightedDigraph) AddEdge(from, to, weight int) {
+func (w *MyMatrixGraph) AddEdge(from, to, weight int) {
 	w.matrix[from][to] = weight
 }
 
-func (w *WeightedDigraph) RemoveEdge(from, to int) {
+func (w *MyMatrixGraph) RemoveEdge(from, to int) {
 	w.matrix[from][to] = -1
 }
 
-func (w *WeightedDigraph) HasEdge(from, to int) bool {
+func (w *MyMatrixGraph) HasEdge(from, to int) bool {
 	return w.matrix[from][to] != -1
 }
 
-func (w *WeightedDigraph) Weight(from, to int) int {
+func (w *MyMatrixGraph) Weight(from, to int) int {
 	return w.matrix[from][to]
 }
 
-func (w *WeightedDigraph) Size() int {
+func (w *MyMatrixGraph) Size() int {
 	return w.size
 }
 
-func (w *WeightedDigraph) Neighbors(v int) []*Edge {
+func (w *MyMatrixGraph) Neighbors(v int) []*Edge {
 	var edges []*Edge
 	for to, weight := range w.matrix[v] {
 		if weight != -1 {
@@ -55,7 +55,7 @@ func (w *WeightedDigraph) Neighbors(v int) []*Edge {
 	return edges
 }
 
-func (w *WeightedDigraph) Display() {
+func (w *MyMatrixGraph) Display() {
 	for from := 0; from < len(w.matrix); from++ {
 		var edges []string
 		for to := 0; to < len(w.matrix); to++ {
@@ -69,7 +69,7 @@ func (w *WeightedDigraph) Display() {
 
 func main_() {
 	num := 10
-	graph := NewWeightedDigraph(num)
+	graph := NewMyMatrixGraph(num)
 	graph.AddEdge(0, 1, 10)
 	graph.AddEdge(0, 2, 10)
 	graph.AddEdge(0, 4, 10)

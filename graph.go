@@ -189,7 +189,7 @@ func levelOrderTraverseGraph3(graph Graph, s int) {
 
 func main() {
 	num := 10
-	graph := NewWeightedDigraph(num)
+	graph := NewMyMatrixGraph(num)
 	graph.AddEdge(0, 1, 1)
 	graph.AddEdge(0, 2, 2)
 	graph.AddEdge(0, 3, 3)

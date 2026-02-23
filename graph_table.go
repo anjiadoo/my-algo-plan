@@ -6,23 +6,23 @@ import "fmt"
 // 🌟技巧2：HasEdge/RemoveEdge/Weight方法遍历List可以优化，比如用map[int]map[int]int存储，就可以避免遍历List，复杂度能降到O(1)。
 // 🌟技巧3：参数涉及到切片的，注意扩容带来的影响
 
-type MyWeightedDigraph struct {
+type MyTableGraph struct {
 	size  int
 	graph [][]*Edge // 有向加权图-邻接表
 }
 
-func NewMyWeightedDigraph(n int) *MyWeightedDigraph {
-	return &MyWeightedDigraph{
+func NewMyTableGraph(n int) *MyTableGraph {
+	return &MyTableGraph{
 		size:  n,
 		graph: make([][]*Edge, n),
 	}
 }
 
-func (m *MyWeightedDigraph) AddEdge(from, to, weight int) {
+func (m *MyTableGraph) AddEdge(from, to, weight int) {
 	m.graph[from] = append(m.graph[from], &Edge{from: from, to: to, weight: weight})
 }
 
-func (m *MyWeightedDigraph) RemoveEdge(from, to int) {
+func (m *MyTableGraph) RemoveEdge(from, to int) {
 	for i := 0; i < len(m.graph[from]); i++ {
 		if m.graph[from][i].to == to {
 			m.graph[from] = append(m.graph[from][:i], m.graph[from][i+1:]...)
@@ -31,7 +31,7 @@ func (m *MyWeightedDigraph) RemoveEdge(from, to int) {
 	}
 }
 
-func (m *MyWeightedDigraph) HasEdge(from, to int) bool {
+func (m *MyTableGraph) HasEdge(from, to int) bool {
 	for i := 0; i < len(m.graph[from]); i++ {
 		if m.graph[from][i].to == to {
 			return true
@@ -40,7 +40,7 @@ func (m *MyWeightedDigraph) HasEdge(from, to int) bool {
 	return false
 }
 
-func (m *MyWeightedDigraph) Weight(from, to int) int {
+func (m *MyTableGraph) Weight(from, to int) int {
 	for i := 0; i < len(m.graph[from]); i++ {
 		if m.graph[from][i].to == to {
 			return m.graph[from][i].weight
@@ -49,15 +49,15 @@ func (m *MyWeightedDigraph) Weight(from, to int) int {
 	return -1
 }
 
-func (m *MyWeightedDigraph) Size() int {
+func (m *MyTableGraph) Size() int {
 	return m.size
 }
 
-func (m *MyWeightedDigraph) Neighbors(v int) []*Edge {
+func (m *MyTableGraph) Neighbors(v int) []*Edge {
 	return m.graph[v]
 }
 
-func (m *MyWeightedDigraph) Display() {
+func (m *MyTableGraph) Display() {
 	for i := 0; i < len(m.graph); i++ {
 		var edges []string
 		for _, e := range m.graph[i] {
@@ -70,7 +70,7 @@ func (m *MyWeightedDigraph) Display() {
 
 func main__() {
 	num := 6
-	graph := NewMyWeightedDigraph(num)
+	graph := NewMyTableGraph(num)
 	graph.AddEdge(0, 1, 10)
 	graph.AddEdge(0, 2, 10)
 	graph.AddEdge(0, 4, 10)
