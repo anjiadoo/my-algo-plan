@@ -109,6 +109,7 @@ func quickSort(nums []int) []int {
 	return nums
 }
 
+// 找一个参考值pivot，对于[lo,hi]，从两边往中间移动，找到左侧比pivot大，右侧比pivot小，然后两者交换♻️，最后再交换pivot。
 func partition(nums []int, lo, hi int) int {
 	pivot := nums[lo]
 	i := lo + 1
@@ -209,7 +210,7 @@ func heapify(nums []int, n, i int) {
 
 // 7、计数排序-非原地-稳定排序-非比较排序
 func countSort(nums []int) []int {
-	// 原理：统计每种元素出现的次数，进而推算出每个元素在排序后数组中的索引位置，最终完成排序。
+	// 原理：统计每种元素(把元素映射到数组下标表示)出现的次数，进而推算出每个元素在排序后数组中的索引位置，最终完成排序。
 	// 时间和空间复杂度都是：O(n+max−min)，其中 n 是待排序数组长度，max−min 是待排序数组的元素范围
 
 	// 找到最大和最小元素
@@ -230,10 +231,12 @@ func countSort(nums []int) []int {
 
 	// 统计每个元素出现的次数
 	for _, num := range nums {
-		count[num+offset]++
+		index := num + offset
+		count[index]++
 	}
 
 	// 累加 count 数组，得到的是 nums[i] 在排序后的数组中的结束位置
+	// count[0]=3 => sorted[0]=x，sorted[1]=x，sorted[2]=x
 	for i := 1; i < len(count); i++ {
 		count[i] += count[i-1]
 	}
@@ -242,8 +245,9 @@ func countSort(nums []int) []int {
 	// 这里注意，我们从后往前遍历 nums，是为了保证排序的稳定性
 	sorted := make([]int, len(nums))
 	for i := len(nums) - 1; i >= 0; i-- {
-		sorted[count[nums[i]+offset]-1] = nums[i]
-		count[nums[i]+offset]--
+		index := nums[i] + offset
+		sorted[count[index]-1] = nums[i]
+		count[index]--
 	}
 
 	copy(nums, sorted)
