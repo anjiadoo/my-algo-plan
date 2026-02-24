@@ -142,6 +142,8 @@ func partition(nums []int, lo, hi int) int {
 func mergeSort(nums []int) []int {
 	var sort func(nums []int, lo, hi int)
 
+	temp := make([]int, len(nums))
+
 	sort = func(nums []int, lo, hi int) {
 		// 单个元素不用排序
 		if lo == hi {
@@ -151,15 +153,49 @@ func mergeSort(nums []int) []int {
 		mid := lo + (hi-lo)/2
 		sort(nums, lo, mid)
 		sort(nums, mid+1, hi)
-		merge(nums, lo, mid, hi)
+		merge(nums, lo, mid, hi, temp)
 	}
 
 	sort(nums, 0, len(nums)-1)
 	return nums
 }
 
-func merge(nums []int, lo, mid, hi int) {
-	//todo
+func merge(nums []int, lo, mid, hi int, temp []int) {
+	// 临时数组起始索引
+	k := 0
+
+	// 双指针分别指向左右子数组的起始位置
+	i, j := lo, mid+1
+
+	// 比较并合并两个有序子数组
+	for i <= mid && j <= hi {
+		if nums[i] <= nums[j] {
+			temp[k] = nums[i]
+			i++
+		} else {
+			temp[k] = nums[j]
+			j++
+		}
+		k++
+	}
+
+	// 将剩余元素复制到临时数组
+	for i <= mid {
+		temp[k] = nums[i]
+		i++
+		k++
+	}
+
+	for j <= hi {
+		temp[k] = nums[j]
+		j++
+		k++
+	}
+
+	// 将临时数组复制回原数组
+	for idx := 0; idx < k; idx++ {
+		nums[lo+idx] = temp[idx]
+	}
 }
 
 // 6、堆排序-完全二叉树结构-原地排序-不稳定排序
@@ -347,8 +383,8 @@ func main() {
 	//fmt.Println("冒泡排序:", bubbleSortV1(nums))
 	//fmt.Println("插入排序:", insertSort(nums))
 	//fmt.Println("快速排序:", quickSort(nums))
+	fmt.Println("归并排序:", mergeSort(nums))
 	//fmt.Println("堆排序:", heapSort(nums))
 	//fmt.Println("计数排序:", countSort(nums))
-	fmt.Println("桶排序:", bucketSort(nums))
-
+	//fmt.Println("桶排序:", bucketSort(nums))
 }
