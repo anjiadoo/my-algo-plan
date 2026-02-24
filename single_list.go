@@ -7,7 +7,7 @@ import (
 // 单链表实现：
 // 🌟技巧1：头插法直接返回新节点作为新的head，避免单独处理空链表
 // 🌟技巧2：插入/删除时先找前一个节点（index-1位置），通过p.next操作目标节点
-// 0、func createListNode(array []int) *ListNode
+// 0、func NewMyListNode(array []int) *ListNode
 // 1、func insertHeadNode(head *ListNode, val int) *ListNode
 // 2、func insertTailNode(head *ListNode, val int)
 // 3、func insertIndexNode(head *ListNode, index, val int)
@@ -15,72 +15,72 @@ import (
 // 5、func printListNode(head *ListNode)
 
 type ListNode struct {
-	val  int
-	next *ListNode
+	Val  int
+	Next *ListNode
 }
 
-func createListNode(array []int) *ListNode {
+func NewMyListNode(array []int) *ListNode {
 	if array == nil || len(array) == 0 {
 		return nil
 	}
-	head := &ListNode{val: array[0]}
+	head := &ListNode{Val: array[0]}
 	curr := head
 	for i := 1; i < len(array); i++ {
-		curr.next = &ListNode{val: array[i]}
-		curr = curr.next
+		curr.Next = &ListNode{Val: array[i]}
+		curr = curr.Next
 	}
 	return head
 }
 
 func insertHeadNode(head *ListNode, val int) *ListNode {
-	return &ListNode{val: val, next: head}
+	return &ListNode{Val: val, Next: head}
 }
 
 func insertTailNode(head *ListNode, val int) {
-	newNode := &ListNode{val: val}
+	newNode := &ListNode{Val: val}
 	p := head
-	for p.next != nil {
-		p = p.next
+	for p.Next != nil {
+		p = p.Next
 	}
-	p.next = newNode
+	p.Next = newNode
 }
 
 func insertIndexNode(head *ListNode, index, val int) {
 	// 假设不会越界
 	p := head
 	for i := 0; i < index; i++ {
-		p = p.next
+		p = p.Next
 	}
 
-	tail := p.next
-	p.next = &ListNode{val: val, next: tail}
+	tail := p.Next
+	p.Next = &ListNode{Val: val, Next: tail}
 }
 
 func removeIndexNode(head *ListNode, index int) *ListNode {
 	// 假设不会越界
 	p := head
 	for i := 0; i < index; i++ {
-		p = p.next
+		p = p.Next
 	}
-	delNode := p.next
+	delNode := p.Next
 	if delNode != nil {
-		p.next = delNode.next
+		p.Next = delNode.Next
 	}
 	return delNode
 }
 
 func printListNode(head *ListNode) {
 	var array []int
-	for p := head; p != nil; p = p.next {
-		array = append(array, p.val)
+	for p := head; p != nil; p = p.Next {
+		array = append(array, p.Val)
 	}
 	fmt.Println("从前向后遍历单链表:", array)
 }
 
-func main() {
+func main1() {
 	var array = []int{1, 2, 3, 4, 5}
 
-	list := createListNode(array)
+	list := NewMyListNode(array)
 
 	list = insertHeadNode(list, 666)
 	insertTailNode(list, 999)
