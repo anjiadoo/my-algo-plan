@@ -261,6 +261,27 @@ func getIntersectionNode(headA, headB *ListNode) *ListNode {
 	return p1
 }
 
+// 删除排序链表中的重复元素
+func deleteDuplicates(head *ListNode) *ListNode {
+	if head == nil {
+		return nil
+	}
+	slow := head
+	fast := head
+
+	for fast != nil {
+		if slow.Val != fast.Val {
+			slow.Next = fast
+			slow = slow.Next
+		}
+		fast = fast.Next
+	}
+
+	// 注意这里要断链，否则末位相同元素没有删除
+	slow.Next = nil
+	return head
+}
+
 func main() {
 	//array1 := []int{-9, 3}
 	//array2 := []int{5, 7}
@@ -288,11 +309,15 @@ func main() {
 	//head := NewMyListNode(array)
 	//list := middleNode(head)
 
-	array1 := []int{1, 2, 3, 4, 9, 10}
-	array2 := []int{5, 6, 7, 8, 9, 10}
-	l1 := NewMyListNode(array1)
-	l2 := NewMyListNode(array2)
-	list := getIntersectionNode(l1, l2)
+	//array1 := []int{1, 2, 3, 4, 9, 10}
+	//array2 := []int{5, 6, 7, 8, 9, 10}
+	//l1 := NewMyListNode(array1)
+	//l2 := NewMyListNode(array2)
+	//list := getIntersectionNode(l1, l2)
+
+	array := []int{1, 2, 2, 2, 3, 3, 3, 4, 5, 6, 6, 6}
+	head := NewMyListNode(array)
+	list := deleteDuplicates(head)
 
 	printListNode(list)
 }
