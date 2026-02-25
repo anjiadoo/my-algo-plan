@@ -14,14 +14,12 @@ import (
 // 滑动窗口算法伪码框架
 func slidingWindow(s string) {
 	// 用合适的数据结构记录窗口中的数据，根据具体场景变通
-	// 比如说，我想记录窗口中元素出现的次数，就用 map
-	// 如果我想记录窗口中的元素和，就可以只用一个 int
-	var window = map[rune]int{}
+	var window = map[byte]int{}
 
 	left, right := 0, 0
 	for right < len(s) {
 
-		c := rune(s[right])
+		c := s[right]
 		window[c]++ // c 是将移入窗口的字符
 		right++     // 增大窗口
 
@@ -33,7 +31,7 @@ func slidingWindow(s string) {
 		// 判断左侧窗口是否要收缩
 		for left < right /* && window needs shrink*/ {
 
-			d := rune(s[left])
+			d := s[left]
 			window[d]-- // d 是将移出窗口的字符
 			left++      // 缩小窗口
 
