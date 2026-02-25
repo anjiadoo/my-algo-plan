@@ -3,8 +3,9 @@ package main
 import "fmt"
 
 // 双链表实现：
-// 🌟技巧1：设置虚拟头节点和尾节点
-// 🌟技巧2: 新增节点可先设置prev、next，没有副作用，已有节点修改prev、next时需注意先后顺序
+// 🌟技巧1：虚拟头尾节点技巧 - 设置虚拟头节点和尾节点
+// 🌟技巧2：新节点先链接技巧 - 新增节点可先设置prev、next，没有副作用，已有节点修改prev、next时需注意先后顺序
+
 // 0、func NewMyLinkedList() *MyLinkedList
 // 1、func (m *MyLinkedList) Get(index int) int
 // 2、func (m *MyLinkedList) AddAtHead(val int)

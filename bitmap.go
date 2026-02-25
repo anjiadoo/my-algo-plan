@@ -6,9 +6,10 @@ import (
 )
 
 // 位图（Bitmap）实现，用uint64切片高效存储比特位：
-// 🌟技巧1：一个uint64存储64个比特位，bucketIndex = num/64，bitIndex = num%64
-// 🌟技巧2：置位用 |=，清零用 &^=（Go按位清零），检查用 & != 0，都是O(1)操作
-// 🌟技巧3：相比bool切片，内存占用仅为1/8，适合海量数据的布尔标记场景
+// 🌟技巧1：位索引定位技巧 - 一个uint64存储64个比特位，bucketIndex = num/64，bitIndex = num%64
+// 🌟技巧2：位运算操作技巧 - 置位用 |=，清零用 &^=（Go按位清零），检查用 & != 0，都是O(1)操作
+// 🌟技巧3：内存压缩技巧 - 相比bool切片，内存占用仅为1/8，适合海量数据的布尔标记场景
+
 // 0、func NewBitmap(maxNum int) (*Bitmap, error)
 // 1、func (b *Bitmap) set(num int) error
 // 2、func (b *Bitmap) clear(num int) error

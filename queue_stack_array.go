@@ -3,8 +3,9 @@ package main
 import "fmt"
 
 // 数组队列和栈实现（使用泛型）：
-// 🌟技巧1：队列出队用切片重新分配 q.queue[1:]，简单直观
-// 🌟技巧2：栈用append入栈，出栈取最后一个元素后缩减切片，利用slice的动态特性
+// 🌟技巧1：切片截取出队技巧 - 队列出队用切片重新分配 q.queue[1:]，简单直观
+// 🌟技巧2：切片动态入出栈技巧 - 栈用append入栈，出栈取最后一个元素后缩减切片，利用slice的动态特性
+
 // 队列：
 // 0、func NewMyArrayQueue[T any]() *MyArrayQueue[T]
 // 1、func (q *MyArrayQueue[T]) Push(val T)
@@ -12,6 +13,7 @@ import "fmt"
 // 3、func (q *MyArrayQueue[T]) Peek() T
 // 4、func (q *MyArrayQueue[T]) Size() int
 // 5、func (q *MyArrayQueue[T]) Display()
+
 // 栈：
 // 6、func NewMyArrayStack[T any]() *MyArrayStack[T]
 // 7、func (s *MyArrayStack[T]) Push(val T)

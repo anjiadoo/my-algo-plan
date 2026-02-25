@@ -3,12 +3,12 @@ package main
 import "fmt"
 
 // 图算法实现：
-// 🌟技巧1：DFS遍历节点前必须先检查visited防止死循环，然后立即标记visited再访问（节点遍历）
-// 🌟技巧2：边遍历用二维数组visited[from][to]，同一方向只遍历一次，用判断后return而非continue（边遍历）
-// 🌟技巧3：找所有路径用onPath而非visited，前序位置add到path，后序位置pop出来（路径遍历）
-// 🌟技巧4：BFS用sz记录当前层的大小，每层循环结束后step++才能正确计算步数（BFS层次遍历）
-// 🌟技巧5：BFS入队时立即标记visited，而非出队时，防止同一节点被多次入队（BFS防重复）
-// 🌟技巧6：BFS带权重用state结构体存(node, weight)，入队时用累计weight（带权重BFS）
+// 🌟技巧1：先检查后标记技巧 - DFS遍历节点前必须先检查visited防止死循环，然后立即标记visited再访问（节点遍历）
+// 🌟技巧2：二维visited技巧 - 边遍历用二维数组visited[from][to]，同一方向只遍历一次，用判断后return而非continue（边遍历）
+// 🌟技巧3：onPath回溯技巧 - 找所有路径用onPath而非visited，前序位置add到path，后序位置pop出来（路径遍历）
+// 🌟技巧4：层级计数技巧 - BFS用sz记录当前层的大小，每层循环结束后step++才能正确计算步数（BFS层次遍历）
+// 🌟技巧5：入队即标记技巧 - BFS入队时立即标记visited，而非出队时，防止同一节点被多次入队（BFS防重复）
+// 🌟技巧6：带权状态技巧 - BFS带权重用state结构体存(node, weight)，入队时用累计weight（带权重BFS）
 
 type Graph interface {
 	AddEdge(from, to, weight int)

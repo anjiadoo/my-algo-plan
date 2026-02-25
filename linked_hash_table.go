@@ -6,9 +6,10 @@ import (
 )
 
 // 哈希表实现（链地址法解决冲突）：
-// 🌟技巧1：hash函数用取模法 key % capacity，简单高效
-// 🌟技巧2：使用container/list标准双向链表作为桶，避免手写链表
-// 🌟技巧3：新增head/tail节点，把普通节点链接在一起形成一个双链表，就可以顺序访问
+// 🌟技巧1：取模哈希技巧 - hash函数用取模法 key % capacity，简单高效
+// 🌟技巧2：标准链表复用技巧 - 使用container/list标准双向链表作为桶，避免手写链表
+// 🌟技巧3：双链表顺序访问技巧 - 新增head/tail节点，把普通节点链接在一起形成一个双链表，就可以顺序访问
+
 // 0、func NewMyLinkedHashTable(capacity int) *MyLinkedHashTable
 // 1、func (m *MyLinkedHashTable) Get(key int) (int, bool)
 // 2、func (m *MyLinkedHashTable) Put(key, val int)

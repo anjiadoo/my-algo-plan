@@ -5,8 +5,9 @@ import (
 )
 
 // 单链表实现：
-// 🌟技巧1：头插法直接返回新节点作为新的head，避免单独处理空链表
-// 🌟技巧2：插入/删除时先找前一个节点（index-1位置），通过p.next操作目标节点
+// 🌟技巧1：头插法技巧 - 头插法直接返回新节点作为新的head，避免单独处理空链表
+// 🌟技巧2：前驱节点操作技巧 - 插入/删除时先找前一个节点（index-1位置），通过p.next操作目标节点
+
 // 0、func NewMyListNode(array []int) *ListNode
 // 1、func insertHeadNode(head *ListNode, val int) *ListNode
 // 2、func insertTailNode(head *ListNode, val int)

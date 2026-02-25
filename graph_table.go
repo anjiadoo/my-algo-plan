@@ -2,9 +2,9 @@ package main
 
 import "fmt"
 
-// 🌟技巧1：把graph设置为 map[int][]Edge，可以动态添加新节点
-// 🌟技巧2：HasEdge/RemoveEdge/Weight方法遍历List可以优化，比如用map[int]map[int]int存储，就可以避免遍历List，复杂度能降到O(1)。
-// 🌟技巧3：参数涉及到切片的，注意扩容带来的影响
+// 🌟技巧1：动态节点技巧 - 把graph设置为 map[int][]Edge，可以动态添加新节点
+// 🌟技巧2：邻接表优化技巧 - HasEdge/RemoveEdge/Weight方法遍历List可以优化，比如用map[int]map[int]int存储，就可以避免遍历List，复杂度能降到O(1)。
+// 🌟技巧3：切片扩容注意技巧 - 参数涉及到切片的，注意扩容带来的影响
 
 type MyTableGraph struct {
 	size  int

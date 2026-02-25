@@ -6,9 +6,10 @@ import (
 )
 
 // 循环数组
-// 🌟技巧1：左闭右开区间[x,y)表示范围，x表示第一个有效元素索引，y表示最后一个有效元素的后一个索引
-// 🌟技巧2：数组尾部元素获取下标：(end-1+size)%size
-// 🌟技巧3：所有涉及到start/end的更新操作，都需要在取模的的基础上操作
+// 🌟技巧1：左闭右开区间技巧 - 左闭右开区间[x,y)表示范围，x表示第一个有效元素索引，y表示最后一个有效元素的后一个索引
+// 🌟技巧2：尾部元素定位技巧 - 数组尾部元素获取下标：(end-1+size)%size
+// 🌟技巧3：取模更新技巧 - 所有涉及到start/end的更新操作，都需要在取模的的基础上操作
+
 // 1、NewCycleArray[T any](size int) *MyCycleArray[T]
 // 2、func (m *MyCycleArray[T]) getFirst() (T, error)
 // 3、func (m *MyCycleArray[T]) getLast() (T, error)
