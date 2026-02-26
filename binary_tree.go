@@ -90,3 +90,66 @@ func levelOrderTraverseNary(root *NTreeNode) {
 		depth++
 	}
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// 二叉树的最大深度 - 分解子问题思路
+func maxDepth(root *TreeNode) int {
+	if root == nil {
+		return 0
+	}
+
+	leftDepth := maxDepth(root.Left)
+	rightDepth := maxDepth(root.Right)
+
+	if leftDepth > rightDepth {
+		return leftDepth + 1
+	} else {
+		return rightDepth + 1
+	}
+}
+
+// 二叉树的前序遍历 - 分解子问题思路
+func preorderTraversal(root *TreeNode) []int {
+	if root == nil {
+		return []int{}
+	}
+	res := []int{root.Val}
+	leftVals := preorderTraversal(root.Left)
+	rightVals := preorderTraversal(root.Right)
+	res = append(res, leftVals...)
+	res = append(res, rightVals...)
+	return res
+}
+
+// 二叉树的直径 - 分解子问题思路
+func diameterOfBinaryTree(root *TreeNode) int {
+	// 二叉树的最大直径 = 某个节点的（左子树最大直径 + 右子树最大直径）
+	// 某个节点的最大直径 = 左子树最大直径+1 or 右子树最大直径+1
+
+	var depthFun func(root *TreeNode) int
+	finalMaxNum := 0
+
+	maxFun := func(x, y int) int {
+		if x > y {
+			return x
+		}
+		return y
+	}
+
+	depthFun = func(root *TreeNode) int {
+		if root == nil {
+			return 0
+		}
+
+		leftMax := depthFun(root.Left)
+		rightMax := depthFun(root.Right)
+
+		finalMaxNum = maxFun(finalMaxNum, leftMax+rightMax)
+
+		return 1 + maxFun(leftMax, rightMax)
+	}
+
+	depthFun(root)
+	return finalMaxNum
+}
