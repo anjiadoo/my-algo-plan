@@ -187,7 +187,7 @@ func levelOrderTraverseGraph3(graph Graph, s int) {
 	}
 }
 
-func main() {
+func main2() {
 	num := 10
 	graph := NewMyMatrixGraph(num)
 	graph.AddEdge(0, 1, 1)
