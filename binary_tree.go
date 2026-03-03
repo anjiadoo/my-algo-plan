@@ -126,11 +126,7 @@ func maxDepth(root *TreeNode) int {
 	leftDepth := maxDepth(root.Left)
 	rightDepth := maxDepth(root.Right)
 
-	if leftDepth > rightDepth {
-		return leftDepth + 1
-	} else {
-		return rightDepth + 1
-	}
+	return 1 + max(leftDepth, rightDepth)
 }
 
 // 二叉树的前序遍历 - 分解子问题思路
@@ -139,10 +135,8 @@ func preorderTraversal(root *TreeNode) []int {
 		return []int{}
 	}
 	res := []int{root.Val}
-	leftVals := preorderTraversal(root.Left)
-	rightVals := preorderTraversal(root.Right)
-	res = append(res, leftVals...)
-	res = append(res, rightVals...)
+	res = append(res, preorderTraversal(root.Left)...)
+	res = append(res, preorderTraversal(root.Right)...)
 	return res
 }
 
@@ -152,28 +146,18 @@ func diameterOfBinaryTree(root *TreeNode) int {
 	// 某个节点的最大直径 = 左子树最大直径+1 or 右子树最大直径+1
 
 	var depthFun func(root *TreeNode) int
-	finalMaxNum := 0
-
-	maxFun := func(x, y int) int {
-		if x > y {
-			return x
-		}
-		return y
-	}
+	finalMax := 0
 
 	depthFun = func(root *TreeNode) int {
 		if root == nil {
 			return 0
 		}
-
 		leftMax := depthFun(root.Left)
 		rightMax := depthFun(root.Right)
-
-		finalMaxNum = maxFun(finalMaxNum, leftMax+rightMax)
-
-		return 1 + maxFun(leftMax, rightMax)
+		finalMax = max(finalMax, leftMax+rightMax)
+		return 1 + max(leftMax, rightMax)
 	}
 
 	depthFun(root)
-	return finalMaxNum
+	return finalMax
 }

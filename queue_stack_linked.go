@@ -25,7 +25,7 @@ type MyLinkedQueue struct {
 
 func NewMyLinkedQueue() *MyLinkedQueue {
 	return &MyLinkedQueue{
-		list: NewMyLinkedList(),
+		list: NewMyLinkedList([]int{}),
 	}
 }
 
@@ -56,7 +56,7 @@ type MyLinkedStack struct {
 
 func NewMyLinkedStack() *MyLinkedStack {
 	return &MyLinkedStack{
-		list: NewMyLinkedList(),
+		list: NewMyLinkedList([]int{}),
 	}
 }
 
