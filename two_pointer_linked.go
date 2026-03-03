@@ -318,6 +318,5 @@ func main() {
 	array := []int{1, 2, 2, 2, 3, 3, 3, 4, 5, 6, 6, 6}
 	head := NewMyListNode(array)
 	list := deleteDuplicates(head)
-
-	printListNode(list)
+	list.Display()
 }

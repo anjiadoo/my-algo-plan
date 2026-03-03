@@ -72,6 +72,7 @@ func mergeKLists1(lists []*ListNode) *ListNode {
 func main() {
 	l1 := NewMyListNode([]int{1, 3, 5, 7})
 	l2 := NewMyListNode([]int{2, 4, 6, 8})
-	l3 := NewMyListNode([]int{9, 10, 11, 12})
-	printListNode(mergeKLists1([]*ListNode{l1, l2, l3}))
+	l3 := NewMyListNode([]int{9, 10})
+	l0 := mergeKLists1([]*ListNode{l1, l2, l3})
+	l0.Display()
 }

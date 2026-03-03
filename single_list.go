@@ -16,7 +16,7 @@ import (
 // ⚠️易错点3：前驱节点循环次数 - 找第index位置的前驱节点循环index-1次（而非index次），差一会导致操作位置偏移一个节点
 // ⚠️易错点4：递归反转断链 - reverse中head.Next.Next=head后必须head.Next=nil断开原来的指向，否则会形成环导致无限循环
 // ⚠️易错点5：索引越界检查 - 遍历过程中需要检查p是否为nil（insertIndexNode）或p.Next是否为nil（removeIndexNode），否则越界访问会panic
-//
+
 // 何时运用单链表：
 // ❓1、是否需要频繁在头部插入/删除？链表头部操作O(1)，优于数组的O(n)
 // ❓2、是否不需要随机访问？链表只能顺序遍历，随机访问需O(n)，不适合频繁按索引查找的场景
@@ -28,7 +28,7 @@ import (
 // 3、func insertIndexNode(head *ListNode, index, val int) *ListNode
 // 4、func removeIndexNode(head *ListNode, index int) *ListNode
 // 5、func reverse(head *ListNode) *ListNode
-// 6、func (h *ListNode) display()
+// 6、func (h *ListNode) Display()
 
 type ListNode struct {
 	Val  int
@@ -126,7 +126,7 @@ func reverse(head *ListNode) *ListNode {
 	return newHead
 }
 
-func (h *ListNode) display() {
+func (h *ListNode) Display() {
 	p := h
 	str := "打印单链表: "
 	for p != nil {
@@ -136,18 +136,18 @@ func (h *ListNode) display() {
 	fmt.Println(str + "nil")
 }
 
-func main() {
+func main1() {
 	var nums = []int{1, 2, 3, 4, 5}
 
 	list := NewMyListNode(nums)
-	list.display()
+	list.Display()
 
 	list = insertHeadNode(list, 666)
 	list = insertTailNode(list, 999)
 	list = insertIndexNode(list, 2, 555)
 	list = removeIndexNode(list, 2)
-	list.display()
+	list.Display()
 
 	list = reverse(list)
-	list.display()
+	list.Display()
 }
