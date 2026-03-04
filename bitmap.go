@@ -19,20 +19,20 @@ import (
 
 // Bitmap 位图结构，用uint64切片存储比特位
 type Bitmap struct {
-	bits []uint64 // 每个uint64存储64个比特位
-	size int      // 位图可存储的最大数值+1（可选，用于边界检查）
+	buckets []uint64 // 每个uint64存储64个比特位
+	size    int      // 位图可存储的最大数值+1（可选，用于边界检查）
 }
 
-// NewBitmap 创建位图实例，指定可存储的最大数值
 func NewBitmap(maxNum int) (*Bitmap, error) {
 	if maxNum < 0 {
 		return nil, errors.New("maxNum必须是非负数")
 	}
+
 	// 计算需要的uint64数量：(maxNum + 64) / 64
 	bucketCount := (maxNum + 64) / 64
 	return &Bitmap{
-		bits: make([]uint64, bucketCount),
-		size: maxNum + 1,
+		buckets: make([]uint64, bucketCount),
+		size:    maxNum + 1,
 	}, nil
 }
 
@@ -41,9 +41,9 @@ func (b *Bitmap) set(num int) error {
 	if num < 0 || num >= b.size {
 		return errors.New("num超出位图范围")
 	}
-	bucketIndex := num / 64              // 计算所在的uint64索引
-	bitIndex := uint(num % 64)           // 计算所在的比特位索引
-	b.bits[bucketIndex] |= 1 << bitIndex // 位运算置1
+	bucketIndex := num / 64                 // 计算所在的uint64索引
+	bitIndex := uint(num % 64)              // 计算所在的比特位索引
+	b.buckets[bucketIndex] |= 1 << bitIndex // 位运算置1
 	return nil
 }
 
@@ -54,10 +54,10 @@ func (b *Bitmap) dynamicSet(num int) error {
 	// 计算需要的bucket数量
 	requiredBucket := num/64 + 1
 	// 扩容
-	if requiredBucket > len(b.bits) {
+	if requiredBucket > len(b.buckets) {
 		newBits := make([]uint64, requiredBucket)
-		copy(newBits, b.bits)
-		b.bits = newBits
+		copy(newBits, b.buckets)
+		b.buckets = newBits
 		b.size = requiredBucket * 64
 	}
 	return b.set(num)
@@ -72,7 +72,7 @@ func (b *Bitmap) clear(num int) error {
 	bitIndex := uint(num % 64)
 
 	// 位运算置0（&^是Go的按位清零）
-	b.bits[bucketIndex] &^= 1 << bitIndex
+	b.buckets[bucketIndex] &^= 1 << bitIndex
 	return nil
 }
 
@@ -84,14 +84,14 @@ func (b *Bitmap) has(num int) (bool, error) {
 	bucketIndex := num / 64
 	bitIndex := uint(num % 64)
 	// 位运算检查该位是否为1
-	return (b.bits[bucketIndex] & (1 << bitIndex)) != 0, nil
+	return (b.buckets[bucketIndex] & (1 << bitIndex)) != 0, nil
 }
 
 // 统计：计算已置位的数量（存在的数值个数）
 func (b *Bitmap) count() int {
 	count := 0
 	// 遍历每个uint64，统计其中1的个数
-	for _, bucket := range b.bits {
+	for _, bucket := range b.buckets {
 		count += popcount(bucket)
 	}
 	return count
@@ -102,7 +102,7 @@ func popcount(x uint64) int {
 	if x == 0 {
 		return 0
 	}
-	// 递归简化版，生产环境可用runtime.bits.OnesCount64
+	// 递归简化版，生产环境可用runtime.buckets.OnesCount64
 	return int(x&1) + popcount(x>>1)
 }
 
@@ -141,5 +141,5 @@ func main() {
 	// 内存占用对比：存储0~100的3个数值
 	// 传统切片（[]int）：3*8=24字节
 	// 位图：2个uint64=16字节（可存储0~127），实际仅用3个位
-	fmt.Println("位图内存占用（字节）：", len(bitmap.bits)*8) // 16
+	fmt.Println("位图内存占用（字节）：", len(bitmap.buckets)*8) // 16
 }
