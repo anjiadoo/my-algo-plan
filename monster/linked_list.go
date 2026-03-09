@@ -1,6 +1,8 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+)
 
 type ListNode struct {
 	Val  int
@@ -27,7 +29,6 @@ func (h *ListNode) Display() {
 	fmt.Println(str + "nil")
 }
 
-// 合并两个有序链表: https://leetcode.cn/problems/merge-two-sorted-lists/description/
 func mergeTwoLists(list1 *ListNode, list2 *ListNode) *ListNode {
 	dummy := &ListNode{}
 	p := dummy
@@ -53,7 +54,6 @@ func mergeTwoLists(list1 *ListNode, list2 *ListNode) *ListNode {
 	return dummy.Next
 }
 
-// 分隔链表: https://leetcode.cn/problems/partition-list/description/
 func partition(head *ListNode, x int) *ListNode {
 	dummy1 := &ListNode{}
 	p1 := dummy1
@@ -78,7 +78,6 @@ func partition(head *ListNode, x int) *ListNode {
 	return dummy1.Next
 }
 
-// 合并 K 个升序链表：https://leetcode.cn/problems/merge-k-sorted-lists/description/
 func mergeKLists(lists []*ListNode) *ListNode {
 	if len(lists) == 0 {
 		return nil
@@ -96,7 +95,6 @@ func merge(lists []*ListNode, lo, hi int) *ListNode {
 	return mergeTwoLists(l1, l2)
 }
 
-// 删除链表的倒数第N个结点：https://leetcode.cn/problems/remove-nth-node-from-end-of-list/description/
 func removeNthFromEnd(head *ListNode, n int) *ListNode {
 	dummy := &ListNode{Next: head}
 	p1 := dummy
@@ -116,7 +114,6 @@ func removeNthFromEnd(head *ListNode, n int) *ListNode {
 	return dummy.Next
 }
 
-// 链表的中间结点: https://leetcode.cn/problems/middle-of-the-linked-list/description/
 func middleNode(head *ListNode) *ListNode {
 	fast := head
 	slow := head
@@ -125,6 +122,94 @@ func middleNode(head *ListNode) *ListNode {
 		slow = slow.Next
 	}
 	return slow
+}
+
+func detectCycle(head *ListNode) *ListNode {
+	// 1、快慢指针同时出发，相遇时停止
+	fast, slow := head, head
+	for fast != nil && fast.Next != nil {
+		slow = slow.Next
+		fast = fast.Next.Next
+		if fast == slow {
+			break
+		}
+	}
+
+	if fast == nil || fast.Next == nil {
+		return nil
+	}
+
+	// 2、快慢指针相同步数出发，相遇时停止
+	slow = head
+	for slow != fast {
+		slow = slow.Next
+		fast = fast.Next
+	}
+	return slow
+}
+
+func getIntersectionNode(headA, headB *ListNode) *ListNode {
+	// 1,2,3,4,5,6,7,8,9,10|11,5,6,7,8,9,10
+	// 11,5,6,7,8,9,10|1,2,3,4,5,6,7,8,9,10
+	p1 := headA
+	p2 := headB
+
+	for p1 != p2 {
+		if p1 != nil {
+			p1 = p1.Next
+		} else {
+			p1 = headB
+		}
+		if p2 != nil {
+			p2 = p2.Next
+		} else {
+			p2 = headA
+		}
+	}
+	return p1
+}
+
+func hasCycle(head *ListNode) bool {
+	fast, slow := head, head
+	for fast != nil && fast.Next != nil {
+		slow = slow.Next
+		fast = fast.Next.Next
+		if fast == slow {
+			return true
+		}
+	}
+	return false
+}
+
+func trainingPlan(head *ListNode, cnt int) *ListNode {
+	p1 := head
+	for i := 0; i < cnt; i++ {
+		if p1 != nil {
+			p1 = p1.Next
+		}
+	}
+	p2 := head
+	for p1 != nil {
+		p1 = p1.Next
+		p2 = p2.Next
+	}
+	return p2
+}
+
+func deleteDuplicates(head *ListNode) *ListNode {
+	dummy := &ListNode{Next: head}
+	p := dummy
+	for p.Next != nil && p.Next.Next != nil {
+		if p.Next.Val == p.Next.Next.Val {
+			rmVal := p.Next.Val
+			for p.Next != nil && p.Next.Val == rmVal {
+				p.Next = p.Next.Next
+			}
+		} else {
+			p = p.Next
+		}
+	}
+	return dummy.Next
 }
 
 func main() {
