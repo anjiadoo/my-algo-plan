@@ -8,8 +8,10 @@ type MinHeap struct {
 }
 
 func (h *MinHeap) Init(nums []int) {
+	// 从最后一个非叶子节点开始向上构建最小堆（索引 n/2-1）
+	// ❓为啥呢
+	// 因为：叶子节点没有子节点，所以它们天然满足最大堆的性质。
 	h.array = nums
-	// 从最后一个非叶子节点开始向上构建小顶堆
 	for i := len(h.array)/2 - 1; i >= 0; i-- {
 		h.siftDown(i, len(h.array))
 	}
@@ -23,7 +25,7 @@ func (h *MinHeap) Push(x int) {
 
 func (h *MinHeap) Pop() (int, bool) {
 	if len(h.array) == 0 {
-		return 0, false
+		return -1, false
 	}
 	minVal := h.array[0]
 	last := len(h.array) - 1
@@ -40,18 +42,15 @@ func (h *MinHeap) Pop() (int, bool) {
 }
 
 // siftDown 下沉操作，将索引 i 处的元素下沉到合适位置
-// 参考堆排序中的 heapify 思路，但调整为小顶堆（父节点 < 子节点）
 func (h *MinHeap) siftDown(i, n int) {
 	minIndex := i    // 假设当前节点是最小的
 	left := 2*i + 1  // 左子节点索引
 	right := 2*i + 2 // 右子节点索引
 
-	// 如果左子节点存在且小于当前最小值
 	if left < n && h.array[left] < h.array[minIndex] {
 		minIndex = left
 	}
 
-	// 如果右子节点存在且小于当前最小值
 	if right < n && h.array[right] < h.array[minIndex] {
 		minIndex = right
 	}
@@ -65,13 +64,11 @@ func (h *MinHeap) siftDown(i, n int) {
 }
 
 // siftUp 上浮操作，将索引 i 处的元素上浮到合适位置
-// 新插入的元素从末尾不断与父节点比较，若小于父节点则交换
 func (h *MinHeap) siftUp(i int) {
 	for i > 0 {
-		// 父节点索引
-		parent := (i - 1) / 2
-		// 堆性质满足，停止上浮
+		parent := (i - 1) / 2 // 父节点索引
 		if h.array[i] >= h.array[parent] {
+			// 堆性质满足，停止上浮
 			break
 		}
 		h.array[i], h.array[parent] = h.array[parent], h.array[i]
