@@ -212,8 +212,108 @@ func deleteDuplicates(head *ListNode) *ListNode {
 	return dummy.Next
 }
 
+// 思路：把矩阵的每一行看作一个已排序的链表，然后做 K 路归并。每一行只需要关心自己的"下一个元素"（即 j+1），不需要关心其他行。
+func kthSmallest(matrix [][]int, k int) int {
+	// 实现最小堆
+	heap := &minHeap{}
+
+	// 初始化：把每行的第一个元素（第0列）都推入堆
+	for i := 0; i < len(matrix); i++ {
+		heap.push([]int{matrix[i][0], i, 0})
+	}
+
+	// for k-- 直到 k 为 0 即为答案
+	n := len(matrix)
+	res := -1
+	for k > 0 {
+		cur := heap.pop()
+		res = cur[0]
+		i, j := cur[1], cur[2]
+
+		if j+1 < n {
+			heap.push([]int{matrix[i][j+1], i, j + 1})
+		}
+		k--
+	}
+	return res
+}
+
+type minHeap struct {
+	// array[i]代表一个节点
+	// array[i][0]=val
+	// array[i][1]=行index
+	// array[i][2]=列index
+	array [][]int
+}
+
+func (h *minHeap) push(x []int) {
+	h.array = append(h.array, x)
+	h.siftUp(len(h.array) - 1)
+}
+
+func (h *minHeap) pop() []int {
+	if len(h.array) == 0 {
+		return []int{-1, -1, -1}
+	}
+	minVal := h.array[0]
+	last := len(h.array) - 1
+
+	h.array[0], h.array[last] = h.array[last], h.array[0]
+	h.array = h.array[:last]
+	if len(h.array) > 0 {
+		h.siftDown(len(h.array), 0)
+	}
+	return minVal
+}
+
+// 下沉
+func (h *minHeap) siftDown(n, i int) {
+	minIndex := i
+	left := 2*i + 1
+	right := 2*i + 2
+
+	if left < n && h.array[left][0] < h.array[minIndex][0] {
+		minIndex = left
+	}
+	if right < n && h.array[right][0] < h.array[minIndex][0] {
+		minIndex = right
+	}
+	if minIndex != i {
+		h.array[minIndex], h.array[i] = h.array[i], h.array[minIndex]
+		h.siftDown(n, minIndex)
+	}
+}
+
+// 上浮
+func (h *minHeap) siftUp(i int) {
+	for i > 0 {
+		parent := (i - 1) / 2
+		if h.array[parent][0] <= h.array[i][0] {
+			break
+		}
+		h.array[parent], h.array[i] = h.array[i], h.array[parent]
+		i = parent
+	}
+}
+
+func kSmallestPairs(nums1 []int, nums2 []int, k int) [][]int {
+	//nums1 = [1,7,11], nums2 = [2,4,6], k = 3
+	//[1, 2] -> [1, 4] -> [1, 6]
+	//[7, 2] -> [7, 4] -> [7, 6]
+	//[11, 2] -> [11, 4] -> [11, 6]
+	var res [][]int
+
+	return res
+}
+
 func main() {
-	l1 := NewMyListNode([]int{1, 2, 3, 4, 5})
-	l0 := middleNode(l1)
-	l0.Display()
+	fmt.Println(kSmallestPairs([]int{1, 7, 11}, []int{2, 4, 6}, 3))
+
+	//l1 := NewMyListNode([]int{1, 2, 3, 4, 5})
+	//l0 := middleNode(l1)
+	//l0.Display()
+
+	//martix := [][]int{{1, 5, 9}, {10, 11, 13}, {12, 13, 15}}
+	//fmt.Println(kthSmallest(martix, 8))
+	//fmt.Println(kthSmallest([][]int{{-5}}, 1))
 }
