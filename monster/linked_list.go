@@ -297,17 +297,191 @@ func (h *minHeap) siftUp(i int) {
 }
 
 func kSmallestPairs(nums1 []int, nums2 []int, k int) [][]int {
-	//nums1 = [1,7,11], nums2 = [2,4,6], k = 3
-	//[1, 2] -> [1, 4] -> [1, 6]
-	//[7, 2] -> [7, 4] -> [7, 6]
-	//[11, 2] -> [11, 4] -> [11, 6]
+	heap := &MinHeap{}
+
+	for i := 0; i < len(nums1); i++ {
+		heap.Push([]int{nums1[i] + nums2[0], i, 0})
+	}
+
 	var res [][]int
+
+	for k > 0 {
+		x := heap.Pop()
+		i := x[1]
+		j := x[2]
+		res = append(res, []int{nums1[i], nums2[j]})
+		if j+1 < len(nums2) {
+			heap.Push([]int{nums1[i] + nums2[j+1], i, j + 1})
+		}
+		k--
+	}
 
 	return res
 }
 
+type MinHeap struct {
+	// array[i][0] minSum
+	// array[i][1] i
+	// array[i][2] j
+	array [][]int
+}
+
+func (h *MinHeap) Push(x []int) {
+	h.array = append(h.array, x)
+	h.siftUp(len(h.array) - 1)
+}
+
+func (h *MinHeap) siftUp(i int) {
+	for i > 0 {
+		parent := (i - 1) / 2
+		if h.array[parent][0] <= h.array[i][0] {
+			break
+		}
+		h.array[parent], h.array[i] = h.array[i], h.array[parent]
+		i = parent
+	}
+}
+
+func (h *MinHeap) Pop() []int {
+	if len(h.array) == 0 {
+		return []int{-1, -1, -1}
+	}
+	minVal := h.array[0]
+	last := len(h.array) - 1
+
+	h.array[0], h.array[last] = h.array[last], h.array[0]
+	h.array = h.array[:last]
+	if len(h.array) > 0 {
+		h.siftDown(len(h.array), 0)
+	}
+	return minVal
+}
+
+func (h *MinHeap) siftDown(n, i int) {
+	minIndex := i
+	left := 2*i + 1
+	right := 2*i + 2
+
+	if left < n && h.array[left][0] < h.array[minIndex][0] {
+		minIndex = left
+	}
+	if right < n && h.array[right][0] < h.array[minIndex][0] {
+		minIndex = right
+	}
+	if minIndex != i {
+		h.array[i], h.array[minIndex] = h.array[minIndex], h.array[i]
+		h.siftDown(n, minIndex)
+	}
+}
+
+func addTwoNumbers(l1 *ListNode, l2 *ListNode) *ListNode {
+	dummy := &ListNode{}
+	p := dummy
+	p1 := l1
+	p2 := l2
+	flag := 0
+	// 两条链表走完且没有进位时才能结束循环
+	for p1 != nil || p2 != nil || flag > 0 {
+		// 先加上次的进位
+		val := flag
+		if p1 != nil {
+			val += p1.Val
+			p1 = p1.Next
+		}
+		if p2 != nil {
+			val += p2.Val
+			p2 = p2.Next
+		}
+		flag = val / 10
+		val = val % 10
+		p.Next = &ListNode{Val: val}
+		p = p.Next
+	}
+	return dummy.Next
+}
+
+func reverse(head *ListNode) *ListNode {
+	if head == nil || head.Next == nil {
+		return head
+	}
+	newHead := reverse(head.Next)
+	head.Next.Next = head
+	head.Next = nil
+	return newHead
+}
+
+func addTwoNumbers2(l1 *ListNode, l2 *ListNode) *ListNode {
+	l1 = reverse(l1)
+	l2 = reverse(l2)
+	return reverse(addTwoNumbers(l1, l2))
+}
+
+func addTwoNumbers21(l1 *ListNode, l2 *ListNode) *ListNode {
+	var traverse func(head *ListNode) []int
+
+	traverse = func(head *ListNode) []int {
+		if head == nil {
+			return []int{}
+		}
+		res := traverse(head.Next)
+		res = append(res, head.Val)
+		return res
+	}
+
+	res1 := traverse(l1)
+	res2 := traverse(l2)
+
+	var res []int
+	i1 := 0
+	i2 := 0
+	flag := 0
+
+	for i1 < len(res1) || i2 < len(res2) || flag > 0 {
+		val := flag
+		if i1 < len(res1) {
+			val += res1[i1]
+			i1++
+		}
+		if i2 < len(res2) {
+			val += res2[i2]
+			i2++
+		}
+		flag = val / 10
+		val = val % 10
+		res = append(res, val)
+	}
+	dummy := &ListNode{}
+	p := dummy
+	for i := len(res) - 1; i >= 0; i-- {
+		p.Next = &ListNode{Val: res[i]}
+		p = p.Next
+	}
+	return dummy.Next
+}
+
 func main() {
-	fmt.Println(kSmallestPairs([]int{1, 7, 11}, []int{2, 4, 6}, 3))
+
+	l1 := NewMyListNode([]int{7, 2, 4, 3})
+	l2 := NewMyListNode([]int{5, 6, 4})
+	l0 := addTwoNumbers21(l1, l2)
+	l0.Display()
+
+	//fmt.Println(kSmallestPairs([]int{0, 0, 0}, []int{-3, 22, 35}, 9))
+
+	//heap := &MinHeap{}
+	//heap.Push([]int{1, 1, 1})
+	//heap.Push([]int{10, 1, 1})
+	//heap.Push([]int{19, 1, 1})
+	//heap.Push([]int{4, 1, 1})
+	//heap.Push([]int{2, 1, 1})
+	//fmt.Println(heap.Pop())
+	//fmt.Println(heap.Pop())
+	//fmt.Println(heap.Pop())
+	//fmt.Println(heap.Pop())
+	//fmt.Println(heap.Pop())
+	//fmt.Println(heap.Pop())
+
+	//fmt.Println(kSmallestPairs([]int{1, 7, 11}, []int{2, 4, 6}, 3))
 
 	//l1 := NewMyListNode([]int{1, 2, 3, 4, 5})
 	//l0 := middleNode(l1)
