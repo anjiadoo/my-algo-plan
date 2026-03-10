@@ -116,14 +116,46 @@ func removeIndexNode(head *ListNode, index int) *ListNode {
 	return head
 }
 
+// 递归反转
 func reverse(head *ListNode) *ListNode {
 	if head == nil || head.Next == nil {
 		return head
 	}
 	newHead := reverse(head.Next)
+	// head->next1->*
+	// next1
+	// newHead => next3->next2->next1
+	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->*
+	// 需要把head的next指针置为空
 	head.Next.Next = head
 	head.Next = nil
 	return newHead
+}
+
+// 迭代反转
+func reverseList(head *ListNode) *ListNode {
+	if head == nil || head.Next == nil {
+		return head
+	}
+	// 由于单链表的结构，至少要用三个指针才能完成迭代反转
+	// pre->cur->nxt
+	// cur->pre
+	// pre = cur
+	// cur = nxt
+	// nxt = nxt.Next
+	var pre, cur, nxt *ListNode
+	pre, cur, nxt = nil, head, head.Next
+	for cur != nil {
+		// 逐个结点反转(指针指向pre节点)
+		cur.Next = pre
+		// 更新指针位置
+		pre = cur
+		cur = nxt
+		if nxt != nil {
+			nxt = nxt.Next
+		}
+	}
+	return pre
 }
 
 func (h *ListNode) Display() {

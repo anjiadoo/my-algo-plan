@@ -29,6 +29,7 @@ func (h *ListNode) Display() {
 	fmt.Println(str + "nil")
 }
 
+// 合并两个有序链表 https://leetcode.cn/problems/merge-two-sorted-lists/description/
 func mergeTwoLists(list1 *ListNode, list2 *ListNode) *ListNode {
 	dummy := &ListNode{}
 	p := dummy
@@ -54,6 +55,7 @@ func mergeTwoLists(list1 *ListNode, list2 *ListNode) *ListNode {
 	return dummy.Next
 }
 
+// 分隔链表 https://leetcode.cn/problems/partition-list/description/
 func partition(head *ListNode, x int) *ListNode {
 	dummy1 := &ListNode{}
 	p1 := dummy1
@@ -78,6 +80,7 @@ func partition(head *ListNode, x int) *ListNode {
 	return dummy1.Next
 }
 
+// 合并 K 个升序链表 https://leetcode.cn/problems/merge-k-sorted-lists/description/
 func mergeKLists(lists []*ListNode) *ListNode {
 	if len(lists) == 0 {
 		return nil
@@ -95,6 +98,7 @@ func merge(lists []*ListNode, lo, hi int) *ListNode {
 	return mergeTwoLists(l1, l2)
 }
 
+// 删除链表的倒数第 N 个结点 https://leetcode.cn/problems/remove-nth-node-from-end-of-list/description/
 func removeNthFromEnd(head *ListNode, n int) *ListNode {
 	dummy := &ListNode{Next: head}
 	p1 := dummy
@@ -114,6 +118,7 @@ func removeNthFromEnd(head *ListNode, n int) *ListNode {
 	return dummy.Next
 }
 
+// 链表的中间结点 https://leetcode.cn/problems/middle-of-the-linked-list/description/
 func middleNode(head *ListNode) *ListNode {
 	fast := head
 	slow := head
@@ -124,6 +129,7 @@ func middleNode(head *ListNode) *ListNode {
 	return slow
 }
 
+// 环形链表 II https://leetcode.cn/problems/linked-list-cycle-ii/description/
 func detectCycle(head *ListNode) *ListNode {
 	// 1、快慢指针同时出发，相遇时停止
 	fast, slow := head, head
@@ -148,6 +154,7 @@ func detectCycle(head *ListNode) *ListNode {
 	return slow
 }
 
+// 相交链表 https://leetcode.cn/problems/intersection-of-two-linked-lists/description/
 func getIntersectionNode(headA, headB *ListNode) *ListNode {
 	// 1,2,3,4,5,6,7,8,9,10|11,5,6,7,8,9,10
 	// 11,5,6,7,8,9,10|1,2,3,4,5,6,7,8,9,10
@@ -169,6 +176,7 @@ func getIntersectionNode(headA, headB *ListNode) *ListNode {
 	return p1
 }
 
+// 环形链表 https://leetcode.cn/problems/linked-list-cycle/description/
 func hasCycle(head *ListNode) bool {
 	fast, slow := head, head
 	for fast != nil && fast.Next != nil {
@@ -181,6 +189,7 @@ func hasCycle(head *ListNode) bool {
 	return false
 }
 
+// 返回倒数第cnt个节点 https://leetcode.cn/problems/lian-biao-zhong-dao-shu-di-kge-jie-dian-lcof/
 func trainingPlan(head *ListNode, cnt int) *ListNode {
 	p1 := head
 	for i := 0; i < cnt; i++ {
@@ -196,6 +205,7 @@ func trainingPlan(head *ListNode, cnt int) *ListNode {
 	return p2
 }
 
+// 删除排序链表中的重复元素II https://leetcode.cn/problems/remove-duplicates-from-sorted-list-ii/description/
 func deleteDuplicates(head *ListNode) *ListNode {
 	dummy := &ListNode{Next: head}
 	p := dummy
@@ -212,8 +222,9 @@ func deleteDuplicates(head *ListNode) *ListNode {
 	return dummy.Next
 }
 
-// 思路：把矩阵的每一行看作一个已排序的链表，然后做 K 路归并。每一行只需要关心自己的"下一个元素"（即 j+1），不需要关心其他行。
+// 有序矩阵中第K小的元素 https://leetcode.cn/problems/kth-smallest-element-in-a-sorted-matrix/
 func kthSmallest(matrix [][]int, k int) int {
+	// 思路：把矩阵的每一行看作一个已排序的链表，然后做 K 路归并。每一行只需要关心自己的"下一个元素"（即 j+1），不需要关心其他行。
 	// 实现最小堆
 	heap := &minHeap{}
 
@@ -296,6 +307,7 @@ func (h *minHeap) siftUp(i int) {
 	}
 }
 
+// 查找和最小的K对数字 https://leetcode.cn/problems/find-k-pairs-with-smallest-sums/description/
 func kSmallestPairs(nums1 []int, nums2 []int, k int) [][]int {
 	heap := &MinHeap{}
 
@@ -374,6 +386,7 @@ func (h *MinHeap) siftDown(n, i int) {
 	}
 }
 
+// 两数相加 https://leetcode.cn/problems/add-two-numbers/
 func addTwoNumbers(l1 *ListNode, l2 *ListNode) *ListNode {
 	dummy := &ListNode{}
 	p := dummy
@@ -400,22 +413,14 @@ func addTwoNumbers(l1 *ListNode, l2 *ListNode) *ListNode {
 	return dummy.Next
 }
 
-func reverse(head *ListNode) *ListNode {
-	if head == nil || head.Next == nil {
-		return head
-	}
-	newHead := reverse(head.Next)
-	head.Next.Next = head
-	head.Next = nil
-	return newHead
-}
-
+// 两数相加II https://leetcode.cn/problems/add-two-numbers-ii/
 func addTwoNumbers2(l1 *ListNode, l2 *ListNode) *ListNode {
 	l1 = reverse(l1)
 	l2 = reverse(l2)
 	return reverse(addTwoNumbers(l1, l2))
 }
 
+// 两数相加II https://leetcode.cn/problems/add-two-numbers-ii/
 func addTwoNumbers21(l1 *ListNode, l2 *ListNode) *ListNode {
 	var traverse func(head *ListNode) []int
 
@@ -459,12 +464,171 @@ func addTwoNumbers21(l1 *ListNode, l2 *ListNode) *ListNode {
 	return dummy.Next
 }
 
+// 寻找重复数 https://leetcode.cn/problems/find-the-duplicate-number/description/
+func findDuplicate(nums []int) int {
+	// 以下是Floyd判圈算法，把数组当作隐式链表
+	slow, fast := 0, 0
+	for {
+		slow = nums[slow]
+		fast = nums[nums[fast]]
+		if slow == fast {
+			break
+		}
+	}
+
+	// 重新指向头结点（索引 0）
+	slow = 0
+
+	// 快慢指针同步前进，相交点就是环入口
+	for {
+		slow = nums[slow]
+		fast = nums[fast]
+		if fast == slow {
+			break
+		}
+	}
+	return slow
+}
+
+// 反转链表-递归
+func reverse(head *ListNode) *ListNode {
+	if head == nil || head.Next == nil {
+		return head
+	}
+	newHead := reverse(head.Next)
+	// head->next1...
+	// next1
+	// newHead => next3->next2->next1
+	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->next
+	// 需要把head的next指针置为空
+	head.Next.Next = head
+	head.Next = nil
+	return newHead
+}
+
+// 反转链表-迭代
+func reverse1(head *ListNode) *ListNode {
+	if head == nil || head.Next == nil {
+		return head
+	}
+	// 由于单链表的结构，至少要用三个指针才能完成迭代反转
+	// pre->cur->nxt
+	// cur->pre
+	// pre = cur
+	// cur = nxt
+	// nxt = nxt.Next
+	var pre, cur, nxt *ListNode
+	pre, cur, nxt = nil, head, head.Next
+	for cur != nil {
+		// 逐个结点反转
+		cur.Next = pre
+		// 更新指针位置
+		pre = cur
+		cur = nxt
+		if nxt != nil {
+			nxt = nxt.Next
+		}
+	}
+	return pre
+}
+
+var tail *ListNode
+
+// 反转链表前n个节点
+func reverseN(head *ListNode, n int) *ListNode {
+	if n == 1 {
+		tail = head.Next
+		return head
+	}
+	newHead := reverseN(head.Next, n-1)
+	// head->next1...
+	// next1
+	// newHead => next3->next2->next1
+	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->next
+	// 需要把head的next指针置为tail
+	head.Next.Next = head
+	head.Next = tail
+	return newHead
+}
+
+// 反转链表前n个节点
+func reverseN1(head *ListNode, n int) *ListNode {
+	if head == nil || head.Next == nil {
+		return head
+	}
+	// head->node1->node2->node3->node4->node5->nil
+	// 由于单链表的结构，至少要用三个指针才能完成迭代反转
+	// pre->cur->nxt
+	// cur->pre
+	// pre = cur
+	// cur = nxt
+	// nxt = nxt.Next
+	var pre, cur, nxt *ListNode
+	pre, cur, nxt = nil, head, head.Next
+	for n > 0 {
+		// 逐个结点反转(指针指向pre节点)
+		cur.Next = pre
+		// 更新指针位置
+		pre = cur
+		cur = nxt
+		if nxt != nil {
+			nxt = nxt.Next
+		}
+		n--
+	}
+	// 此时的cur是第n+1个节点，head是反转后的尾结点
+	head.Next = cur
+	// 此时的 pre 是反转后的头结点
+	return pre
+}
+
+// 反转链表II-迭代解法 https://leetcode.cn/problems/reverse-linked-list-ii/description/
+func reverseBetween(head *ListNode, left int, right int) *ListNode {
+	if left == 1 {
+		return reverseN(head, right)
+	}
+
+	// 寻找left的前一个节点
+	pre := head
+	for i := 1; i < left-1; i++ {
+		pre = pre.Next
+	}
+
+	// 反转left后面的N个节点
+	pre.Next = reverseN(pre.Next, right-left+1)
+	return head
+}
+
+// 反转链表II-递归解法 https://leetcode.cn/problems/reverse-linked-list-ii/description/
+func reverseBetween2(head *ListNode, m int, n int) *ListNode {
+	if m == 1 {
+		return reverseN(head, n)
+	}
+	tail := reverseBetween2(head.Next, m-1, n-1)
+	head.Next = tail
+	return head
+}
+
+// K个一组翻转链表 https://leetcode.cn/problems/reverse-nodes-in-k-group/
+func reverseKGroup(head *ListNode, k int) *ListNode {
+
+}
+
 func main() {
 
-	l1 := NewMyListNode([]int{7, 2, 4, 3})
-	l2 := NewMyListNode([]int{5, 6, 4})
-	l0 := addTwoNumbers21(l1, l2)
+	l1 := NewMyListNode([]int{1, 2, 3, 4, 5, 6, 7, 8})
+	l0 := reverseBetween2(l1, 3, 5)
 	l0.Display()
+
+	//fmt.Println(findDuplicate([]int{1, 3, 4, 2, 2}))
+	//fmt.Println(findDuplicate([]int{3, 1, 3, 4, 2}))
+	//fmt.Println(findDuplicate([]int{3, 3, 3, 3, 3}))
+	//fmt.Println(findDuplicate([]int{7, 9, 7, 4, 2, 8, 7, 7, 1, 5}))
+
+	//l1 := NewMyListNode([]int{7, 2, 4, 3})
+	//l2 := NewMyListNode([]int{5, 6, 4})
+	//l0 := addTwoNumbers21(l1, l2)
+	//l0.Display()
 
 	//fmt.Println(kSmallestPairs([]int{0, 0, 0}, []int{-3, 22, 35}, 9))
 
