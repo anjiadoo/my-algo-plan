@@ -1,3 +1,79 @@
+/*
+ * ============================================================================
+ *                    📘 链表指针操作 · 核心记忆框架
+ * ============================================================================
+ * 【三种基本操作】—— 所有链表题都是这三种的组合
+ *
+ *     1. 断链：node.Next = nil          // 切断连接
+ *     2. 接链：node.Next = target       // 建立连接
+ *     3. 移动：node = node.Next         // 移动指针
+ *
+ *     🔑 关键原则：先保存，再断链，最后接链
+ *        一旦覆盖了 node.Next，原来的下一个节点就丢了！
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【五大模式与口诀】
+ *
+ *   ① 虚拟头结点（Dummy Node）
+ *      口诀：凡是头结点可能变的，都加 dummy
+ *      模板：dummy := &ListNode{Next: head}
+ *            ... 操作 ...
+ *            return dummy.Next
+ *      适用：合并、分隔、删除
+ *
+ *   ② 快慢指针
+ *      口诀：找中点用 2倍速，找倒数第k用 k步差
+ *        · 找中点 ：fast 每次走2步，slow走1步，fast到底 slow就在中间
+ *        · 找倒数k：fast 先走k步，然后一起走，fast到底 slow就在倒数第k
+ *        · 找环入口：快慢相遇后，slow回起点，同速再走，再次相遇就是环入口
+ *
+ *   ③ 反转链表
+ *      递归口诀：后面已经反转好了，我只管把自己接上去
+ *        head.Next.Next = head   // 让下一个节点指回我
+ *        head.Next = nil         // 我指向空（断尾）
+ *
+ *      迭代口诀：三指针，逐个翻，pre-cur-nxt 往右搬
+ *        步骤图：
+ *            pre    cur    nxt
+ *             ↓      ↓      ↓
+ *            nil ← [ 1 ] → [ 2 ] → [ 3 ] → nil
+ *                   ① cur.Next = pre    // 反指
+ *                   ② pre = cur         // 右移
+ *                   ③ cur = nxt         // 右移
+ *                   ④ nxt = nxt.Next    // 右移
+ *
+ *   ④ 穿针引线（拼接 / 拆分）
+ *      口诀：拆成多条链，最后缝起来
+ *      典型：partition —— 拆成 "小于x" 和 "大于等于x" 两条链，最后拼接
+ *
+ *   ⑤ 递归思维
+ *      口诀：相信子问题已解决，我只处理当前节点
+ *      典型：reverseBetween2 —— 相信 head.Next 后面已经反转好了
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【防错清单】—— 每次写完链表题后对照检查
+ *
+ *     ✅ 是否处理了空链表？           → head == nil
+ *     ✅ 是否处理了单节点？           → head.Next == nil
+ *     ✅ 是否有指针丢失？             → 覆盖 Next 前没保存
+ *     ✅ 尾结点的 Next 是否为 nil？   → 反转后忘记断尾
+ *     ✅ 返回值是 dummy.Next 还是 head？ → 头结点被移动时应返回 dummy.Next
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【万能画图法】—— 与其记代码，不如记画图的习惯
+ *
+ *     操作前:  pre → cur → nxt → ...
+ *     操作后:  pre → nxt → ...         (删除 cur)
+ *              pre ← cur    nxt → ...  (反转 cur)
+ *
+ *     推荐符号：→ 表示 Next 指针  ✕ 表示断开  ①②③ 表示操作顺序
+ * ────────────────────────────────────────────────────────────────────────────
+ *   通用防错清单：
+ *      □ 操作 p.Next 前，先确认 p != nil
+ *      □ 需要删除/跳过节点时，用前驱节点操作：pre.Next = pre.Next.Next
+ *      □ 断开节点时记得把 node.Next = nil，防止出现环
+ *      □ 构建新链表时，用 dummy 开头，返回 dummy.Next
+ *      □ 反转后原来的 head 变成了 tail，别忘了处理 tail.Next 的指向
+ * ============================================================================
+ */
+
 package main
 
 import (
@@ -496,11 +572,10 @@ func reverse(head *ListNode) *ListNode {
 		return head
 	}
 	newHead := reverse(head.Next)
-	// head->next1...
-	// next1
+	// head->next1->next2->next3
 	// newHead => next3->next2->next1
-	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->next
-	// 需要把head的next指针置为空
+	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->*
+	// 需要把head的next指针置为空：newHead => next3->next2->next1->head->nil
 	head.Next.Next = head
 	head.Next = nil
 	return newHead
@@ -541,11 +616,10 @@ func reverseN(head *ListNode, n int) *ListNode {
 		return head
 	}
 	newHead := reverseN(head.Next, n-1)
-	// head->next1...
-	// next1
+	// head->next1->next2->next3
 	// newHead => next3->next2->next1
-	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->next
-	// 需要把head的next指针置为tail
+	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->*
+	// 需要把head的next指针置为tail：newHead => next3->next2->next1->head->tail
 	head.Next.Next = head
 	head.Next = tail
 	return newHead
@@ -611,14 +685,85 @@ func reverseBetween2(head *ListNode, m int, n int) *ListNode {
 
 // K个一组翻转链表 https://leetcode.cn/problems/reverse-nodes-in-k-group/
 func reverseKGroup(head *ListNode, k int) *ListNode {
+	if head == nil {
+		return nil
+	}
+	// 1->2->3->4->5->6->
+	// a     b
+	// 区间[a, b)包含k个待反转元素
+	a, b := head, head
+	for i := 0; i < k; i++ {
+		if b == nil {
+			return head
+		}
+		b = b.Next
+	}
 
+	// 反转前k个元素
+	newHead := reverseN(a, k)
+
+	// 此时b指向下一组待反转的头结点
+	// 递归反转后续链表并连接起来
+	a.Next = reverseKGroup(b, k)
+	return newHead
+}
+
+// 两两交换链表中的节点 https://leetcode.cn/problems/swap-nodes-in-pairs/
+func swapPairs(head *ListNode) *ListNode {
+	if head == nil {
+		return head
+	}
+	// 1->2->3->4->5->6->
+	// a     b
+	// 区间[a, b)包含2个待反转元素
+	a, b := head, head
+	for i := 0; i < 2; i++ {
+		if b == nil {
+			return head
+		}
+		b = b.Next
+	}
+
+	// 反转前2个元素
+	newHead := reverseN(a, 2)
+
+	// 此时b指向下一组待反转的头结点
+	// 递归反转后续链表并连接起来
+	a.Next = swapPairs(b)
+
+	return newHead
+}
+
+// 回文链表 https://leetcode.cn/problems/palindrome-linked-list/
+func isPalindrome(head *ListNode) bool {
+	var traverse func(head *ListNode)
+
+	left := head
+	res := true
+
+	traverse = func(right *ListNode) {
+		if right == nil {
+			return
+		}
+		traverse(right.Next)
+		if right.Val != left.Val {
+			res = false
+			return
+		}
+		left = left.Next
+	}
+
+	traverse(head)
+	return res
 }
 
 func main() {
+	l1 := NewMyListNode([]int{1, 2, 3, 4, 5, 6, 4, 3, 2, 1})
+	fmt.Println(isPalindrome(l1))
 
-	l1 := NewMyListNode([]int{1, 2, 3, 4, 5, 6, 7, 8})
-	l0 := reverseBetween2(l1, 3, 5)
-	l0.Display()
+	//l1 := NewMyListNode([]int{1, 2, 3, 4, 5, 6, 7, 8})
+	//l0 := swapPairs(l1)
+	//l0.Display()
 
 	//fmt.Println(findDuplicate([]int{1, 3, 4, 2, 2}))
 	//fmt.Println(findDuplicate([]int{3, 1, 3, 4, 2}))

@@ -123,7 +123,6 @@ func reverse(head *ListNode) *ListNode {
 	}
 	newHead := reverse(head.Next)
 	// head->next1->*
-	// next1
 	// newHead => next3->next2->next1
 	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->*
 	// 需要把head的next指针置为空
@@ -155,6 +154,55 @@ func reverseList(head *ListNode) *ListNode {
 			nxt = nxt.Next
 		}
 	}
+	return pre
+}
+
+var tail *ListNode
+
+// 反转链表前n个节点 - 递归
+func reverseN(head *ListNode, n int) *ListNode {
+	if n == 1 {
+		tail = head.Next
+		return head
+	}
+	newHead := reverseN(head.Next, n-1)
+	// head->next1->next2->next3
+	// newHead => next3->next2->next1
+	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->*
+	// 需要把head的next指针置为tail：newHead => next3->next2->next1->head->tail
+	head.Next.Next = head
+	head.Next = tail
+	return newHead
+}
+
+// 反转链表前n个节点 - 迭代
+func reverseN1(head *ListNode, n int) *ListNode {
+	if head == nil || head.Next == nil {
+		return head
+	}
+	// head->node1->node2->node3->node4->node5->nil
+	// 由于单链表的结构，至少要用三个指针才能完成迭代反转
+	// pre->cur->nxt
+	// cur->pre
+	// pre = cur
+	// cur = nxt
+	// nxt = nxt.Next
+	var pre, cur, nxt *ListNode
+	pre, cur, nxt = nil, head, head.Next
+	for n > 0 {
+		// 逐个结点反转(指针指向pre节点)
+		cur.Next = pre
+		// 更新指针位置
+		pre = cur
+		cur = nxt
+		if nxt != nil {
+			nxt = nxt.Next
+		}
+		n--
+	}
+	// 此时的cur是第n+1个节点，head是反转后的尾结点
+	head.Next = cur
+	// 此时的 pre 是反转后的头结点
 	return pre
 }
 
