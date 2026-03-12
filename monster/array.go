@@ -1,5 +1,10 @@
 package main
 
+import (
+	"fmt"
+	"strings"
+)
+
 // 删除有序数组中的重复项 https://leetcode.cn/problems/remove-duplicates-from-sorted-array/description/
 func removeDuplicates(nums []int) int {
 	if len(nums) == 0 {
@@ -12,6 +17,34 @@ func removeDuplicates(nums []int) int {
 			nums[slow] = nums[fast] // 维护nums[0..slow]无重复
 		}
 		fast++
+	}
+	return slow + 1
+}
+
+// 删除有序数组中的重复项II https://leetcode.cn/problems/remove-duplicates-from-sorted-array-ii/description/
+func removeDuplicates2(nums []int) int {
+	if len(nums) == 0 {
+		return 0
+	}
+	slow, fast, count := 0, 0, 0
+	for fast < len(nums) {
+		// 1, 1, 1, 2, 2, 2, 3, 4, 5, 5, 6
+		// s
+		// f
+		// 维护nums[0..slow]无重复
+		// slow++在fast++前面，所以需要判断 slow < fast
+		if nums[slow] != nums[fast] {
+			slow++
+			nums[slow] = nums[fast]
+		} else if slow < fast && count < 2 {
+			slow++
+			nums[slow] = nums[fast]
+		}
+		fast++
+		count++
+		if fast < len(nums) && nums[fast] != nums[fast-1] {
+			count = 0
+		}
 	}
 	return slow + 1
 }
@@ -250,7 +283,73 @@ func generateMatrix(n int) [][]int {
 	return matrix
 }
 
+// 验证回文串 https://leetcode.cn/problems/valid-palindrome/
+func isPalindrome1(s string) bool {
+	sb := strings.Builder{}
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			sb.WriteByte(s[i])
+		} else if s[i] >= 'A' && s[i] <= 'Z' {
+			sb.WriteByte(s[i] + 32)
+		} else if s[i] >= '0' && s[i] <= '9' {
+			sb.WriteByte(s[i])
+		}
+	}
+
+	s = sb.String()
+
+	left, right := 0, len(s)-1
+	for left < right {
+		if s[left] != s[right] {
+			return false
+		}
+		left++
+		right--
+	}
+	return true
+}
+
+// 颜色分类 https://leetcode.cn/problems/sort-colors/
+func sortColors(nums []int) []int {
+	// 双指针p0/p2=>[0,p0)存放0，(p2,len(nums)-1]存放2
+	p0, p2 := 0, len(nums)-1
+	p := 0
+
+	for p <= p2 {
+		if nums[p] == 0 {
+			nums[p], nums[p0] = nums[p0], nums[p]
+			p0++
+		} else if nums[p] == 2 {
+			nums[p], nums[p2] = nums[p2], nums[p]
+			p2--
+		} else {
+			p++
+		}
+		if p < p0 {
+			p = p0
+		}
+	}
+	return nums
+}
+
+// 合并两个有序数组 https://leetcode.cn/problems/merge-sorted-array/description/
+func merge1(nums1 []int, m int, nums2 []int, n int) {
+	//输入：nums1 = [1,2,3,0,0,0], m = 3, nums2 = [2,5,6], n = 3
+	//输出：[1,2,2,3,5,6]
+	//解释：需要合并 [1,2,3] 和 [2,5,6] 。
+	//合并结果是 [1,2,2,3,5,6] ，其中斜体加粗标注的为 nums1 中的元素。
+
+}
+
 func main() {
+
+	fmt.Println(sortColors([]int{2, 0, 2, 1, 1, 0}))
+	fmt.Println(sortColors([]int{2, 0, 1}))
+	fmt.Println(sortColors([]int{0, 2, 1, 2, 1, 0, 2, 0, 1}))
+
+	//fmt.Println(isPalindrome1("A man, a plan, a canal: Panama"))
+	//fmt.Println(isPalindrome1("race a car"))
+	//fmt.Println(isPalindrome1("0P"))
 
 	//fmt.Println(generateMatrix(3))
 	//fmt.Println(generateMatrix(1))
@@ -277,5 +376,8 @@ func main() {
 	//fmt.Println(nums)
 
 	//fmt.Println(removeElement([]int{1, 2, 3, 4, 5, 6, 7, 8, 9}, 5))
-	//fmt.Println(removeDuplicates([]int{1, 2, 2, 2, 3, 4, 5, 5, 6}))
+
+	//nums := []int{1, 1, 1, 2, 2, 2, 3, 4, 5, 5, 6}
+	//fmt.Println(removeDuplicates2(nums))
+	//fmt.Println(nums)
 }
