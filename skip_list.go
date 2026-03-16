@@ -325,7 +325,7 @@ func (z *SkipList) Display() {
 		fmt.Printf("Level %2d: head", i)
 		curr := z.head.forward[i]
 		for curr != nil {
-			fmt.Printf(" -> [%s:%.1f]", curr.member, curr.score)
+			fmt.Printf(" -> [%s:%v]", curr.member, curr.score)
 			curr = curr.forward[i]
 		}
 		fmt.Println(" -> nil")
@@ -334,7 +334,7 @@ func (z *SkipList) Display() {
 	curr := z.head.forward[0]
 	parts := make([]string, 0, z.size)
 	for curr != nil {
-		parts = append(parts, fmt.Sprintf("%s(%.1f)", curr.member, curr.score))
+		parts = append(parts, fmt.Sprintf("%s(%v)", curr.member, curr.score))
 		curr = curr.forward[0]
 	}
 	fmt.Println(strings.Join(parts, " -> "))
@@ -346,35 +346,37 @@ func main() {
 
 	// 插入测试
 	fmt.Println("===== ZADD =====")
-	members := []struct {
-		member string
-		score  float64
-	}{
-		{"alice", 88.5},
-		{"bob", 72.0},
-		{"charlie", 95.0},
-		{"dave", 72.0}, // 与 bob 同分，按 member 字典序排在 bob 后
-		{"eve", 60.0},
+	members := map[string]float64{
+		"jay":      63,
+		"alice":    88,
+		"bob":      72,
+		"charlie":  95,
+		"dave":     72, // 与 bob 同分，按 member 字典序排在 bob 后
+		"eve":      60,
+		"jayden":   100,
+		"andy":     21,
+		"suki":     89,
+		"anjiadoo": 45,
 	}
-	for _, m := range members {
-		z.ZAdd(m.member, m.score)
+	for member, score := range members {
+		z.ZAdd(member, score)
 	}
 	z.Display()
 
 	// ZSCORE 测试
 	fmt.Println("===== ZSCORE =====")
-	for _, m := range members {
-		if s, ok := z.ZScore(m.member); ok {
-			fmt.Printf("ZSCORE %s -> %.1f ✓\n", m.member, s)
+	for member := range members {
+		if s, ok := z.ZScore(member); ok {
+			fmt.Printf("ZSCORE %s -> %v ✓\n", member, s)
 		}
 	}
 	fmt.Println()
 
 	// ZRANK 测试
 	fmt.Println("===== ZRANK =====")
-	for _, m := range members {
-		if r, ok := z.ZRank(m.member); ok {
-			fmt.Printf("ZRANK %s -> %d\n", m.member, r)
+	for member := range members {
+		if r, ok := z.ZRank(member); ok {
+			fmt.Printf("ZRANK %s -> %d\n", member, r)
 		}
 	}
 	fmt.Println()
@@ -389,7 +391,7 @@ func main() {
 	results := z.ZRangeByScore(70, 95)
 	fmt.Printf("共 %d 个结果:\n", len(results))
 	for _, r := range results {
-		fmt.Printf("  %s -> %.1f\n", r.Member, r.Score)
+		fmt.Printf("  %s -> %v\n", r.Member, r.Score)
 	}
 	fmt.Println()
 
