@@ -1,3 +1,110 @@
+/*
+ * ============================================================================
+ *                      📘 跳表（Redis SkipList 简化版）· 核心记忆框架
+ * ============================================================================
+ * 【一句话理解 SkipList】
+ *
+ *   SkipList = 跳表（按 score 有序）+ 哈希表（member → score 的 O(1) 映射）
+ *   member string 是唯一标识，score float64 是排序依据，两者分离。
+ *
+ *   Redis 命令对照：
+ *     ZADD   key s m  →  ZAdd(member, score)
+ *     ZREM   key m    →  ZRem(member)
+ *     ZSCORE key m    →  ZScore(member) (float64, bool)
+ *     ZRANK  key m    →  ZRank(member) (int, bool)       // 0-based 排名
+ *     ZRANGE key s e  →  ZRangeByScore(min, max) []ZNode // 按 score 范围
+ *     ZCARD  key      →  ZCard() int
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【SkipList 的双索引结构】
+ *
+ *   Redis SkipList 实际上维护两个索引：
+ *     ① 跳表（skiplist）：按 score 排序，支持范围查询和排名
+ *     ② 哈希表（dict）  ：member → score 映射，支持 O(1) 查分
+ *
+ *   本实现也用同样的双索引：
+ *     z.dict  map[string]float64   // O(1) 查分 / 判断存在
+ *     z.head  *skipNode            // 跳表头，按 score 有序
+ *
+ *   ⚠️ 易错点1：ZAdd 时 member 已存在需要先删后插（不能只更新 score）
+ *      score 变了意味着节点在跳表中的位置变了，必须从旧位置摘除再插入新位置。
+ *      流程：① dict 查到旧 score → ② 用(旧score, member)定位并删除跳表节点
+ *            → ③ 插入新节点(新score, member) → ④ 更新 dict
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【SkipList 跳表的排序规则（双键排序）】
+ *
+ *   跳表节点排序：先按 score 升序，score 相同时按 member 字典序升序
+ *   这保证了每个(score, member)组合在跳表中唯一且位置确定。
+ *
+ *   比较函数（核心）：
+ *     func less(aScore float64, aMember string, bScore float64, bMember string) bool {
+ *         if aScore != bScore { return aScore < bScore }
+ *         return aMember < bMember
+ *     }
+ *
+ *   ⚠️ 易错点2：所有跳表操作（插入/删除/查找前驱）都必须用双键比较
+ *      只用 score 比较会导致 score 相同的多个节点无法精确定位，
+ *      删除时可能删错节点（删掉同 score 的另一个 member）。
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【ZRank 排名的实现原理】
+ *
+ *   跳表天然支持排名：从 head 出发，沿底层（forward[0]）线性数到目标节点。
+ *   更高效的实现（Redis 真实做法）是在每个 forward 指针上额外记录 span（跨度），
+ *   但本简化版直接在底层链表上计数，时间复杂度 O(N)。
+ *
+ *   ⚠️ 易错点3：ZRank 必须先用 dict 确认 member 存在，再去跳表计数
+ *      若 member 不存在，沿底层遍历完也找不到，需要返回 (0, false)。
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【ZRangeByScore 的正确姿势】
+ *
+ *   流程：
+ *     ① 用多层索引跳到第一个 score >= min 的前驱（和普通跳表范围查询一样）
+ *     ② 落底（forward[0]），沿底层遍历直到 score > max
+ *
+ *   ⚠️ 易错点4：定位前驱时，内层循环条件用 score 单键比较即可（不需要双键）
+ *      因为我们只需要找到"score < min"的最后一个节点，
+ *      只要 forward[i].score < min 就继续向右，不涉及 member 的比较。
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【ZRem 删除的关键步骤】
+ *
+ *   ① 从 dict 查出该 member 的 score（得知跳表中的精确位置）
+ *   ② 用双键(score, member)在跳表中定位前驱，执行链表删除
+ *   ③ 从 dict 中删除该 member
+ *
+ *   ⚠️ 易错点5：跳表定位时内层循环必须用双键比较（less 函数）
+ *      不能只比较 score，否则相同 score 的多个 member 会定位到错误节点。
+ *      具体条件：forward[i].score < score || (forward[i].score == score && forward[i].member < member)
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【防错清单】—— 每次写完 SkipList 操作后对照检查
+ *
+ *     ✅ ZAdd：member 已存在时，是否先删跳表旧节点再插新节点？
+ *     ✅ 所有跳表定位：score 相同时是否用了 member 字典序作为第二排序键？
+ *     ✅ ZRem：是否先查 dict 得到 score，再去跳表精确定位？
+ *     ✅ ZRangeByScore：定位前驱后是否落到 forward[0] 再线性遍历？
+ *     ✅ ZRank：是否先判断 member 在 dict 中存在再去跳表计数？
+ *     ✅ 插入：两步链接顺序是"先接后继，再接前驱"？
+ *     ✅ 插入：newLevel > sl.level 时有没有补填 update[i] = sl.head？
+ *     ✅ 删除：删完后有没有收缩 sl.level（去掉空的最高层）？
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【API 速查】
+ *
+ *     0. NewSkipList() *SkipList
+ *     1. ZAdd(member string, score float64)              // O(logN)，已存在则更新
+ *     2. ZRem(member string) bool                        // O(logN)
+ *     3. ZScore(member string) (float64, bool)           // O(1)
+ *     4. ZRank(member string) (int, bool)                // O(N)，0-based 升序排名
+ *     5. ZRangeByScore(min, max float64) []ZNode         // O(logN+M)，闭区间
+ *     6. ZCard() int                                     // O(1)
+ *     7. Display()                                       // 可视化打印各层结构
+ * ============================================================================
+ */
+
 package main
 
 import (
@@ -6,72 +113,38 @@ import (
 	"strings"
 )
 
-// 跳表（Skip List）实现：
-// 🌟核心原理：在有序链表基础上增加多层索引，每向上一层索引节点减半、间隔翻倍，形成类似二分查找的效果
-// 🌟时间复杂度：查找、插入、删除均为 O(logN)，N 为元素个数
-// 🌟空间复杂度：O(N)，多层索引的额外空间总和约为 N（等比级数 N/2 + N/4 + ... ≈ N）
-// 🌟随机化层数：通过抛硬币（概率 1/2）决定新节点的层数，期望层数为 2，确保索引层高度期望为 O(logN)
-// 🌟与平衡BST对比：跳表实现更简单，通过随机化而非严格旋转来维持平衡，Redis的有序集合(ZSet)底层就用了跳表
-
-// ⚠️易错点1：查找路径记录 - 插入/删除时需要记录每层的前驱节点（update数组），才能正确修改各层指针
-// ⚠️易错点2：层数维护 - 插入新节点可能增加最大层数，删除节点可能降低最大层数，需同步更新
-// ⚠️易错点3：哨兵头节点 - 头节点不存储实际数据，其forward数组长度等于最大层数，简化边界处理
-// ⚠️易错点4：随机层数上限 - 需要设置maxLevel防止极端情况下层数过高，一般取 log2(N) 即可
-
-// 何时运用跳表：
-// ❓1、是否需要有序集合的快速增删查？跳表提供 O(logN) 的有序操作，比哈希表多了有序性
-// ❓2、是否需要范围查询？跳表的底层是有序链表，天然支持高效的范围遍历
-// ❓3、是否想要比平衡BST更简单的实现？跳表通过随机化替代复杂的旋转/着色操作
-
-// API列表：
-// 0、func NewSkipList() *SkipList                      // 创建跳表
-// 1、func (sl *SkipList) Search(key int) (int, bool)   // 查找key对应的value
-// 2、func (sl *SkipList) Insert(key int, val int)      // 插入/更新键值对
-// 3、func (sl *SkipList) Delete(key int) bool          // 删除key对应的节点
-// 4、func (sl *SkipList) Size() int                    // 返回元素个数
-// 5、func (sl *SkipList) Display()                     // 可视化打印跳表
-
 const (
 	maxLevel    = 16  // 最大层数，支持 2^16 = 65536 个元素的理想跳表
 	probability = 0.5 // 晋升概率，每层节点数期望为下一层的一半
 )
 
-// skipNode 跳表节点
+// skipNode 跳表节点，对应 Redis SkipList 中的一个元素
 type skipNode struct {
-	key     int         // 键，用于排序
-	val     int         // 值
-	forward []*skipNode // forward[i] 表示第 i 层的下一个节点
+	member  string  // 唯一成员名，对应 Redis 的 member
+	score   float64 // 排序分值，对应 Redis 的 score
+	forward []*skipNode
 }
 
-// SkipList 跳表结构
+// SkipList Redis ZSet 简化版：跳表 + 哈希表双索引
 type SkipList struct {
-	head  *skipNode // 哨兵头节点，不存储实际数据
-	level int       // 当前跳表的最大层数（从1开始计数）
-	size  int       // 元素个数
+	head  *skipNode          // 哨兵头节点，不存储实际数据
+	dict  map[string]float64 // member → score，O(1) 查分
+	level int                // 当前跳表最大层数（从1开始）
+	size  int                // 元素个数
 }
 
-// NewSkipList 创建一个空的跳表
+// NewSkipList 创建一个空的 SkipList
 func NewSkipList() *SkipList {
-	// 头节点拥有 maxLevel 层，初始所有层的 forward 都是 nil
-	head := newSkipNode(0, 0, maxLevel)
+	head := &skipNode{forward: make([]*skipNode, maxLevel)}
 	return &SkipList{
 		head:  head,
+		dict:  make(map[string]float64),
 		level: 1,
 	}
 }
 
-// newSkipNode 创建指定层数的跳表节点
-func newSkipNode(key, val, level int) *skipNode {
-	return &skipNode{
-		key:     key,
-		val:     val,
-		forward: make([]*skipNode, level),
-	}
-}
-
-// randomLevel 随机生成新节点的层数
-// 以 probability 的概率向上晋升，期望层数为 1/(1-probability) = 2
-func randomLevel() int {
+// zRandomLevel 随机生成新节点的层数
+func zRandomLevel() int {
 	lvl := 1
 	for rand.Float64() < probability && lvl < maxLevel {
 		lvl++
@@ -79,188 +152,251 @@ func randomLevel() int {
 	return lvl
 }
 
-// Search 查找key对应的value
-// 从最高层开始逐层向下搜索，每层尽量向右移动
-// 时间复杂度：O(logN)
-func (sl *SkipList) Search(key int) (int, bool) {
-	curr := sl.head
+// zLess 跳表的双键比较：先按 score 升序，score 相同时按 member 字典序升序
+// 所有需要在跳表中精确定位节点的操作都必须用这个比较，而不是只比较 score
+func zLess(aScore float64, aMember string, bScore float64, bMember string) bool {
+	if aScore != bScore {
+		return aScore < bScore
+	}
+	return aMember < bMember
+}
 
-	// 从最高层往下搜索
-	for i := sl.level - 1; i >= 0; i-- {
-		// 在当前层尽量向右移动，直到下一个节点的key >= 目标key
-		for curr.forward[i] != nil && curr.forward[i].key < key {
+// zInsertNode 在跳表中插入节点（内部方法，不操作 dict）
+func (z *SkipList) zInsertNode(member string, score float64) {
+	update := make([]*skipNode, maxLevel)
+	curr := z.head
+
+	// 从最高层往下，找每层的前驱：前驱满足 (score,member) < 新节点
+	for i := z.level - 1; i >= 0; i-- {
+		for curr.forward[i] != nil && zLess(curr.forward[i].score, curr.forward[i].member, score, member) {
 			curr = curr.forward[i]
 		}
+		update[i] = curr
 	}
 
-	// 此时 curr 是第0层中 key 小于目标的最后一个节点
-	// curr.forward[0] 就是可能等于目标key的节点
-	curr = curr.forward[0]
-	if curr != nil && curr.key == key {
-		return curr.val, true
+	newLvl := zRandomLevel()
+	if newLvl > z.level {
+		for i := z.level; i < newLvl; i++ {
+			update[i] = z.head // 新层的前驱只有 head
+		}
+		z.level = newLvl
+	}
+
+	node := &skipNode{
+		member:  member,
+		score:   score,
+		forward: make([]*skipNode, newLvl),
+	}
+	for i := 0; i < newLvl; i++ {
+		node.forward[i] = update[i].forward[i] // ① 先接后继
+		update[i].forward[i] = node            // ② 再接前驱
+	}
+}
+
+// zDeleteNode 从跳表中删除节点（内部方法，不操作 dict）
+func (z *SkipList) zDeleteNode(member string, score float64) bool {
+	update := make([]*skipNode, maxLevel)
+	curr := z.head
+
+	for i := z.level - 1; i >= 0; i-- {
+		for curr.forward[i] != nil && zLess(curr.forward[i].score, curr.forward[i].member, score, member) {
+			curr = curr.forward[i]
+		}
+		update[i] = curr
+	}
+
+	// 精确匹配：score 和 member 都要相同
+	target := curr.forward[0]
+	if target == nil || target.score != score || target.member != member {
+		return false
+	}
+
+	for i := 0; i < z.level; i++ {
+		if update[i].forward[i] != target {
+			break // 该层及更高层都不含此节点
+		}
+		update[i].forward[i] = target.forward[i]
+	}
+
+	// 收缩空层
+	for z.level > 1 && z.head.forward[z.level-1] == nil {
+		z.level--
+	}
+	return true
+}
+
+// ZAdd 添加或更新成员分值，对应 Redis ZADD
+// 若 member 已存在，先删除旧跳表节点，再插入新位置（因为 score 变了，位置也变了）
+// 时间复杂度：O(logN)
+func (z *SkipList) ZAdd(member string, score float64) {
+	if oldScore, exists := z.dict[member]; exists {
+		if oldScore == score {
+			return // score 没变，无需任何操作
+		}
+		z.zDeleteNode(member, oldScore) // 从跳表旧位置摘除
+		z.size--
+	}
+	z.zInsertNode(member, score)
+	z.dict[member] = score
+	z.size++
+}
+
+// ZRem 删除成员，对应 Redis ZREM
+// 时间复杂度：O(logN)
+func (z *SkipList) ZRem(member string) bool {
+	score, exists := z.dict[member]
+	if !exists {
+		return false
+	}
+	z.zDeleteNode(member, score)
+	delete(z.dict, member)
+	z.size--
+	return true
+}
+
+// ZScore 获取成员的分值，对应 Redis ZSCORE
+// 时间复杂度：O(1)，直接查哈希表
+func (z *SkipList) ZScore(member string) (float64, bool) {
+	score, ok := z.dict[member]
+	return score, ok
+}
+
+// ZRank 获取成员的升序排名（0-based），对应 Redis ZRANK
+// 时间复杂度：O(N)（简化版，完整版需在 forward 上维护 span 跨度才能 O(logN)）
+func (z *SkipList) ZRank(member string) (int, bool) {
+	if _, exists := z.dict[member]; !exists {
+		return 0, false
+	}
+	rank := 0
+	curr := z.head.forward[0] // 从底层链表第一个节点开始计数
+	for curr != nil {
+		if curr.member == member {
+			return rank, true
+		}
+		rank++
+		curr = curr.forward[0]
 	}
 	return 0, false
 }
 
-// Insert 插入或更新键值对
-// 如果key已存在，更新其value；否则创建新节点插入
-// 时间复杂度：O(logN)
-func (sl *SkipList) Insert(key int, val int) {
-	// update[i] 记录第 i 层中，新节点的前驱节点
-	update := make([]*skipNode, maxLevel)
-	curr := sl.head
+// ZNode 范围查询的返回结果
+type ZNode struct {
+	Member string
+	Score  float64
+}
 
-	// 从最高层往下，找到每层的前驱节点
-	for i := sl.level - 1; i >= 0; i-- {
-		for curr.forward[i] != nil && curr.forward[i].key < key {
+// ZRangeByScore 按 score 范围查找，返回 score 在 [min, max] 闭区间内的所有节点，按 score 升序
+// 对应 Redis ZRANGEBYSCORE key min max
+// 时间复杂度：O(logN + M)，M 为结果数
+func (z *SkipList) ZRangeByScore(min, max float64) []ZNode {
+	if min > max {
+		return nil
+	}
+
+	var result []ZNode
+	curr := z.head
+
+	// 用多层索引跳到第一个 score >= min 的前驱（只用 score 单键定位即可）
+	for i := z.level - 1; i >= 0; i-- {
+		for curr.forward[i] != nil && curr.forward[i].score < min {
 			curr = curr.forward[i]
 		}
-		update[i] = curr
 	}
 
-	// 检查key是否已存在
+	// 落底，沿底层遍历直到 score > max
 	curr = curr.forward[0]
-	if curr != nil && curr.key == key {
-		// key已存在，直接更新value
-		curr.val = val
-		return
+	for curr != nil && curr.score <= max {
+		result = append(result, ZNode{Member: curr.member, Score: curr.score})
+		curr = curr.forward[0]
 	}
-
-	// key不存在，创建新节点
-	newLevel := randomLevel()
-
-	// 如果新节点的层数超过当前最大层数，需要更新update数组
-	// 超出部分的前驱节点都是head
-	if newLevel > sl.level {
-		for i := sl.level; i < newLevel; i++ {
-			update[i] = sl.head
-		}
-		sl.level = newLevel
-	}
-
-	// 创建新节点并在每层中插入
-	node := newSkipNode(key, val, newLevel)
-	for i := 0; i < newLevel; i++ {
-		// 经典链表插入：新节点指向前驱的下一个，前驱指向新节点
-		node.forward[i] = update[i].forward[i]
-		update[i].forward[i] = node
-	}
-
-	sl.size++
+	return result
 }
 
-// Delete 删除key对应的节点
-// 返回是否成功删除（key不存在返回false）
-// 时间复杂度：O(logN)
-func (sl *SkipList) Delete(key int) bool {
-	// update[i] 记录第 i 层中，待删除节点的前驱节点
-	update := make([]*skipNode, maxLevel)
-	curr := sl.head
-
-	for i := sl.level - 1; i >= 0; i-- {
-		for curr.forward[i] != nil && curr.forward[i].key < key {
-			curr = curr.forward[i]
-		}
-		update[i] = curr
-	}
-
-	// 检查key是否存在
-	curr = curr.forward[0]
-	if curr == nil || curr.key != key {
-		return false
-	}
-
-	// 从每层中移除该节点
-	for i := 0; i < sl.level; i++ {
-		if update[i].forward[i] != curr {
-			// 当前层没有该节点（该节点的层数小于当前层），后续更高层也不会有
-			break
-		}
-		// 经典链表删除：前驱直接指向被删节点的下一个
-		update[i].forward[i] = curr.forward[i]
-	}
-
-	// 如果删除节点后最高层变空了，降低层数
-	for sl.level > 1 && sl.head.forward[sl.level-1] == nil {
-		sl.level--
-	}
-
-	sl.size--
-	return true
+// ZCard 返回成员总数，对应 Redis ZCARD
+// 时间复杂度：O(1)
+func (z *SkipList) ZCard() int {
+	return z.size
 }
 
-// Size 返回跳表中的元素个数
-func (sl *SkipList) Size() int {
-	return sl.size
-}
-
-// Display 可视化打印跳表的每一层
-// 从最高层到最低层依次打印，直观展示跳表的索引结构
-func (sl *SkipList) Display() {
-	fmt.Printf("跳表（元素数: %d, 层数: %d）:\n", sl.size, sl.level)
-
-	for i := sl.level - 1; i >= 0; i-- {
+// Display 可视化打印跳表各层结构（调试用）
+func (z *SkipList) Display() {
+	fmt.Printf("SkipList（元素数: %d, 层数: %d）:\n", z.size, z.level)
+	for i := z.level - 1; i >= 0; i-- {
 		fmt.Printf("Level %2d: head", i)
-		curr := sl.head.forward[i]
+		curr := z.head.forward[i]
 		for curr != nil {
-			fmt.Printf(" -> [%d:%d]", curr.key, curr.val)
+			fmt.Printf(" -> [%s:%.1f]", curr.member, curr.score)
 			curr = curr.forward[i]
 		}
 		fmt.Println(" -> nil")
 	}
-
-	// 打印底层有序链表的key序列
 	fmt.Print("有序序列: ")
-	curr := sl.head.forward[0]
-	keys := make([]string, 0, sl.size)
+	curr := z.head.forward[0]
+	parts := make([]string, 0, z.size)
 	for curr != nil {
-		keys = append(keys, fmt.Sprintf("%d", curr.key))
+		parts = append(parts, fmt.Sprintf("%s(%.1f)", curr.member, curr.score))
 		curr = curr.forward[0]
 	}
-	fmt.Println(strings.Join(keys, " -> "))
+	fmt.Println(strings.Join(parts, " -> "))
 	fmt.Println()
 }
 
 func main() {
-	sl := NewSkipList()
-	num := 100
+	z := NewSkipList()
 
 	// 插入测试
-	fmt.Println("===== 插入元素 =====")
-	for i := 1; i <= num; i++ {
-		sl.Insert(i, i*10)
+	fmt.Println("===== ZADD =====")
+	members := []struct {
+		member string
+		score  float64
+	}{
+		{"alice", 88.5},
+		{"bob", 72.0},
+		{"charlie", 95.0},
+		{"dave", 72.0}, // 与 bob 同分，按 member 字典序排在 bob 后
+		{"eve", 60.0},
 	}
-	sl.Display()
+	for _, m := range members {
+		z.ZAdd(m.member, m.score)
+	}
+	z.Display()
 
-	// 查找测试
-	fmt.Println("===== 查找元素 =====")
-	searchKeys := []int{7, 19, 100}
-	for _, key := range searchKeys {
-		if val, ok := sl.Search(key); ok {
-			fmt.Printf("查找 key=%d -> val=%d ✓\n", key, val)
-		} else {
-			fmt.Printf("查找 key=%d -> 不存在 ✗\n", key)
+	// ZSCORE 测试
+	fmt.Println("===== ZSCORE =====")
+	for _, m := range members {
+		if s, ok := z.ZScore(m.member); ok {
+			fmt.Printf("ZSCORE %s -> %.1f ✓\n", m.member, s)
 		}
 	}
 	fmt.Println()
 
-	// 更新测试
-	fmt.Println("===== 更新元素 =====")
-	sl.Insert(7, 777)
-	val, _ := sl.Search(7)
-	fmt.Printf("更新 key=7, newVal=777 -> 查找结果: %d\n", val)
-	fmt.Println()
-
-	// 删除测试
-	fmt.Println("===== 删除元素 =====")
-	deleteKeys := []int{6, 19, 100}
-	for _, key := range deleteKeys {
-		if sl.Delete(key) {
-			fmt.Printf("删除 key=%d -> 成功 ✓\n", key)
-		} else {
-			fmt.Printf("删除 key=%d -> 不存在 ✗\n", key)
+	// ZRANK 测试
+	fmt.Println("===== ZRANK =====")
+	for _, m := range members {
+		if r, ok := z.ZRank(m.member); ok {
+			fmt.Printf("ZRANK %s -> %d\n", m.member, r)
 		}
 	}
-	fmt.Printf("删除后元素个数: %d\n", sl.Size())
-	sl.Display()
+	fmt.Println()
+
+	// ZADD 更新 score 测试
+	fmt.Println("===== ZADD 更新 score =====")
+	z.ZAdd("eve", 99.0) // eve 从 60 升到 99，跳表位置变化
+	z.Display()
+
+	// ZRANGEBYSCORE 测试
+	fmt.Println("===== ZRANGEBYSCORE [70, 95] =====")
+	results := z.ZRangeByScore(70, 95)
+	fmt.Printf("共 %d 个结果:\n", len(results))
+	for _, r := range results {
+		fmt.Printf("  %s -> %.1f\n", r.Member, r.Score)
+	}
+	fmt.Println()
+
+	// ZREM 测试
+	fmt.Println("===== ZREM =====")
+	fmt.Printf("ZREM bob -> %v\n", z.ZRem("bob"))
+	fmt.Printf("ZREM notexist -> %v\n", z.ZRem("notexist"))
+	fmt.Printf("ZCARD -> %d\n", z.ZCard())
+	z.Display()
 }
