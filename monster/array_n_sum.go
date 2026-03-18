@@ -87,9 +87,59 @@ func threeSumTarget(nums []int, target int) [][]int {
 	return result
 }
 
-func main() {
+// n数之和，返回n元组nums[i]+nums[j]...nums[n]=target且i!=j...n的所有元素对儿
+func nSumTarget(nums []int, target int) [][]int {
+	sort.Ints(nums)
+	return _nSumTarget(nums, 4, 0, target)
+}
 
-	fmt.Println(threeSumTarget([]int{-1, 0, 1, 2, -1, -4}, 0))
+func _nSumTarget(nums []int, n int, start int, target int) [][]int {
+	// nums 必须是升序数组
+	var result [][]int
+	if n == 2 {
+		lo, hi := start, len(nums)-1
+		for lo < hi {
+			left, right := nums[lo], nums[hi]
+			sum := nums[lo] + nums[hi]
+			if sum < target {
+				for lo < hi && nums[lo] == left {
+					lo++
+				}
+			} else if sum > target {
+				for lo < hi && nums[hi] == right {
+					hi--
+				}
+			} else {
+				result = append(result, []int{left, right})
+				for lo < hi && nums[lo] == left {
+					lo++
+				}
+				for lo < hi && nums[hi] == right {
+					hi--
+				}
+			}
+		}
+	} else {
+		for i := start; i < len(nums); i++ {
+			res := _nSumTarget(nums, n-1, i+1, target-nums[i])
+			for _, pair := range res {
+				pair = append(pair, nums[i])
+				result = append(result, pair)
+			}
+			// ⚠️ 注意跳过相同元素
+			for i < len(nums)-1 && nums[i] == nums[i+1] {
+				i++
+			}
+		}
+	}
+	return result
+}
+
+func main() {
+	fmt.Println(nSumTarget([]int{1, 0, -1, 0, -2, 2}, 0))
+	fmt.Println(nSumTarget([]int{2, 2, 2, 2}, 8))
+
+	//fmt.Println(threeSumTarget([]int{-1, 0, 1, 2, -1, -4}, 0))
 
 	//fmt.Println(twoSumTarget([]int{1, 1, 1, 2, 2, 3, 3}, 4))
 }

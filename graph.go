@@ -67,7 +67,7 @@ func traverseEdge(graph Graph, v int, visited [][]bool) {
 	for _, edge := range graph.Neighbors(v) {
 		// 如果边已经被遍历过，则跳过
 		if visited[edge.from][edge.to] {
-			return
+			continue
 		}
 
 		// 标记并访问边
