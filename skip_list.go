@@ -1,10 +1,10 @@
 /*
  * ============================================================================
- *                      📘 跳表（Redis SkipList 简化版）· 核心记忆框架
+ *                      📘 跳表（Redis SortedSet 简化版）· 核心记忆框架
  * ============================================================================
- * 【一句话理解 SkipList】
+ * 【一句话理解 SortedSet】
  *
- *   SkipList = 跳表（按 score 有序）+ 哈希表（member → score 的 O(1) 映射）
+ *   SortedSet = 跳表（按 score 有序）+ 哈希表（member → score 的 O(1) 映射）
  *   member string 是唯一标识，score float64 是排序依据，两者分离。
  *
  *   Redis 命令对照：
@@ -16,9 +16,9 @@
  *     ZCARD  key      →  ZCard() int
  *
  * ────────────────────────────────────────────────────────────────────────────
- * 【SkipList 的双索引结构】
+ * 【SortedSet 的双索引结构】
  *
- *   Redis SkipList 实际上维护两个索引：
+ *   Redis SortedSet 实际上维护两个索引：
  *     ① 跳表（skiplist）：按 score 排序，支持范围查询和排名
  *     ② 哈希表（dict）  ：member → score 映射，支持 O(1) 查分
  *
@@ -32,7 +32,7 @@
  *            → ③ 插入新节点(新score, member) → ④ 更新 dict
  *
  * ────────────────────────────────────────────────────────────────────────────
- * 【SkipList 跳表的排序规则（双键排序）】
+ * 【SortedSet 跳表的排序规则（双键排序）】
  *
  *   跳表节点排序：先按 score 升序，score 相同时按 member 字典序升序
  *   这保证了每个(score, member)组合在跳表中唯一且位置确定。
@@ -80,7 +80,7 @@
  *      具体条件：forward[i].score < score || (forward[i].score == score && forward[i].member < member)
  *
  * ────────────────────────────────────────────────────────────────────────────
- * 【防错清单】—— 每次写完 SkipList 操作后对照检查
+ * 【防错清单】—— 每次写完 SortedSet 操作后对照检查
  *
  *     ✅ ZAdd：member 已存在时，是否先删跳表旧节点再插新节点？
  *     ✅ 所有跳表定位：score 相同时是否用了 member 字典序作为第二排序键？
@@ -94,7 +94,7 @@
  * ────────────────────────────────────────────────────────────────────────────
  * 【API 速查】
  *
- *     0. NewSkipList() *SkipList
+ *     0. NewSortedSet() *SortedSet
  *     1. ZAdd(member string, score float64)              // O(logN)，已存在则更新
  *     2. ZRem(member string) bool                        // O(logN)
  *     3. ZScore(member string) (float64, bool)           // O(1)
@@ -118,25 +118,25 @@ const (
 	probability = 0.5 // 晋升概率，每层节点数期望为下一层的一半
 )
 
-// skipNode 跳表节点，对应 Redis SkipList 中的一个元素
+// skipNode 跳表节点，对应 Redis SortedSet 中的一个元素
 type skipNode struct {
 	member  string  // 唯一成员名，对应 Redis 的 member
 	score   float64 // 排序分值，对应 Redis 的 score
 	forward []*skipNode
 }
 
-// SkipList Redis ZSet 简化版：跳表 + 哈希表双索引
-type SkipList struct {
+// SortedSet Redis ZSet 简化版：跳表 + 哈希表双索引
+type SortedSet struct {
 	head  *skipNode          // 哨兵头节点，不存储实际数据
 	dict  map[string]float64 // member → score，O(1) 查分
 	level int                // 当前跳表最大层数（从1开始）
 	size  int                // 元素个数
 }
 
-// NewSkipList 创建一个空的 SkipList
-func NewSkipList() *SkipList {
+// NewSortedSet 创建一个空的 SortedSet
+func NewSortedSet() *SortedSet {
 	head := &skipNode{forward: make([]*skipNode, maxLevel)}
-	return &SkipList{
+	return &SortedSet{
 		head:  head,
 		dict:  make(map[string]float64),
 		level: 1,
@@ -162,7 +162,7 @@ func zLess(aScore float64, aMember string, bScore float64, bMember string) bool 
 }
 
 // zInsertNode 在跳表中插入节点（内部方法，不操作 dict）
-func (z *SkipList) zInsertNode(member string, score float64) {
+func (z *SortedSet) zInsertNode(member string, score float64) {
 	update := make([]*skipNode, maxLevel)
 	curr := z.head
 
@@ -194,7 +194,7 @@ func (z *SkipList) zInsertNode(member string, score float64) {
 }
 
 // zDeleteNode 从跳表中删除节点（内部方法，不操作 dict）
-func (z *SkipList) zDeleteNode(member string, score float64) bool {
+func (z *SortedSet) zDeleteNode(member string, score float64) bool {
 	update := make([]*skipNode, maxLevel)
 	curr := z.head
 
@@ -228,7 +228,7 @@ func (z *SkipList) zDeleteNode(member string, score float64) bool {
 // ZAdd 添加或更新成员分值，对应 Redis ZADD
 // 若 member 已存在，先删除旧跳表节点，再插入新位置（因为 score 变了，位置也变了）
 // 时间复杂度：O(logN)
-func (z *SkipList) ZAdd(member string, score float64) {
+func (z *SortedSet) ZAdd(member string, score float64) {
 	if oldScore, exists := z.dict[member]; exists {
 		if oldScore == score {
 			return // score 没变，无需任何操作
@@ -243,7 +243,7 @@ func (z *SkipList) ZAdd(member string, score float64) {
 
 // ZRem 删除成员，对应 Redis ZREM
 // 时间复杂度：O(logN)
-func (z *SkipList) ZRem(member string) bool {
+func (z *SortedSet) ZRem(member string) bool {
 	score, exists := z.dict[member]
 	if !exists {
 		return false
@@ -256,14 +256,14 @@ func (z *SkipList) ZRem(member string) bool {
 
 // ZScore 获取成员的分值，对应 Redis ZSCORE
 // 时间复杂度：O(1)，直接查哈希表
-func (z *SkipList) ZScore(member string) (float64, bool) {
+func (z *SortedSet) ZScore(member string) (float64, bool) {
 	score, ok := z.dict[member]
 	return score, ok
 }
 
 // ZRank 获取成员的升序排名（0-based），对应 Redis ZRANK
 // 时间复杂度：O(N)（简化版，完整版需在 forward 上维护 span 跨度才能 O(logN)）
-func (z *SkipList) ZRank(member string) (int, bool) {
+func (z *SortedSet) ZRank(member string) (int, bool) {
 	if _, exists := z.dict[member]; !exists {
 		return 0, false
 	}
@@ -288,7 +288,7 @@ type ZNode struct {
 // ZRangeByScore 按 score 范围查找，返回 score 在 [min, max] 闭区间内的所有节点，按 score 升序
 // 对应 Redis ZRANGEBYSCORE key min max
 // 时间复杂度：O(logN + M)，M 为结果数
-func (z *SkipList) ZRangeByScore(min, max float64) []ZNode {
+func (z *SortedSet) ZRangeByScore(min, max float64) []ZNode {
 	if min > max {
 		return nil
 	}
@@ -314,13 +314,13 @@ func (z *SkipList) ZRangeByScore(min, max float64) []ZNode {
 
 // ZCard 返回成员总数，对应 Redis ZCARD
 // 时间复杂度：O(1)
-func (z *SkipList) ZCard() int {
+func (z *SortedSet) ZCard() int {
 	return z.size
 }
 
 // Display 可视化打印跳表各层结构（调试用）
-func (z *SkipList) Display() {
-	fmt.Printf("SkipList（元素数: %d, 层数: %d）:\n", z.size, z.level)
+func (z *SortedSet) Display() {
+	fmt.Printf("SortedSet（元素数: %d, 层数: %d）:\n", z.size, z.level)
 	for i := z.level - 1; i >= 0; i-- {
 		fmt.Printf("Level %2d: head", i)
 		curr := z.head.forward[i]
@@ -342,7 +342,7 @@ func (z *SkipList) Display() {
 }
 
 func main() {
-	z := NewSkipList()
+	z := NewSortedSet()
 
 	// 插入测试
 	fmt.Println("===== ZADD =====")
