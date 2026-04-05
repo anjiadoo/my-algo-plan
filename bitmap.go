@@ -1,21 +1,96 @@
+/*
+ * ============================================================================
+ *                        📘 位图算法 · 核心记忆框架
+ * ============================================================================
+ * 【一句话理解位图】
+ *
+ *   位图：用一个比特位的 0/1 标记某个数值「是否存在」，
+ *         一个 uint64 能同时标记 64 个数值，内存效率是 bool 切片的 1/8。
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【位图核心：三步定位 + 三种位运算】
+ *
+ *   定位公式：
+ *     bucketIndex = num / 64    → 找到第几个 uint64
+ *     bitIndex    = num % 64    → 找到该 uint64 的第几位（bit）
+ *
+ *   三种位运算（全部 O(1)）：
+ *     置位（标记存在）：buckets[bucketIndex] |=  1 << bitIndex
+ *     清零（标记不在）：buckets[bucketIndex] &^= 1 << bitIndex   ← Go 专属 &^ 操作符
+ *     检查（是否存在）：buckets[bucketIndex] &  (1 << bitIndex) != 0
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【固定大小 vs 动态扩容】
+ *
+ *   固定大小（NewBitmap + set/clear/has）：
+ *     构造时分配 maxNum/64+1 个 uint64，size = maxNum+1（闭区间元素个数公式）。
+ *     访问时严格检查 num < 0 || num >= b.size，越界直接报错。
+ *
+ *   动态扩容（dynamicSet）：
+ *     写入前计算 requiredBucket = num/64+1，若超出则重新分配并 copy，
+ *     扩容后 size = requiredBucket * 64（按 bucket 边界对齐，不是 num+1）。
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【核心技巧详解】
+ *
+ *   🌟技巧1：位索引定位技巧
+ *       bucketIndex = num/64，bitIndex = uint(num%64)
+ *       除法 → 第几个桶，取模 → 桶内第几位，两步精确定位任意比特。
+ *
+ *   🌟技巧2：&^ 按位清零技巧
+ *       Go 特有的 &^（AND NOT）操作符，等价于 C 语言的 & ~。
+ *       &^= 1 << bitIndex 可将目标位清 0，其余位不变。
+ *
+ *   🌟技巧3：内存压缩技巧
+ *       bool 切片每个元素占 1 字节（8 位），位图每个元素仅占 1 位，
+ *       内存比 []bool 节省 8 倍，比 []int 节省 64 倍。
+ *
+ *   🌟技巧4：栅栏问题技巧
+ *       区间 [0, maxNum] 共 maxNum+1 个元素，所以 size = maxNum+1。
+ *       类比：n 段栅栏需要 n+1 根柱子，「元素个数 = 上界 - 下界 + 1」。
+ *
+ *   🌟技巧5：bucket数量 = 索引 + 1 技巧
+ *       数组下标从 0 开始，因此 bucket 数量 = 最大 bucketIndex + 1，
+ *       即 bucketCount = num/64 + 1，这是索引到数量的通用转换公式。
+ *
+ *   🌟技巧6：动态扩容按 bucket 对齐技巧
+ *       扩容后 size = requiredBucket * 64，而非 num+1，
+ *       按桶边界对齐避免下次扩容时出现桶内「空洞」导致边界检查错误。
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【易错点】
+ *
+ *   ⚠️ 易错点1：bitIndex 必须转成 uint 类型再做移位
+ *       Go 不允许 int 类型直接做移位量，须写 uint(num % 64)，否则编译报错。
+ *
+ *   ⚠️ 易错点2：清零用 &^=，不能用 &= ~（Go 中没有按位取反 ~ 操作符）
+ *       Go 的按位取反须写 ^x，清零正确写法是 &^= 1 << bitIndex。
+ *
+ *   ⚠️ 易错点3：dynamicSet 扩容后 size 要用桶对齐值，不是 num+1
+ *       size = requiredBucket * 64，而非 num+1，否则桶末尾的合法位会被边界检查拦截。
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【防错清单】—— 每次手写位图后对照检查
+ *
+ *     ✅ 位索引：bitIndex 有没有转成 uint(num % 64)？
+ *     ✅ 置位：使用 |= 1 << bitIndex，不是 = 1 << bitIndex（会清掉其他位）？
+ *     ✅ 清零：使用 &^= 1 << bitIndex，不是 &= ~（Go 无 ~ 操作符）？
+ *     ✅ 检查：使用 & (1 << bitIndex) != 0，不是 == 1（结果是 2^bitIndex 不是 1）？
+ *     ✅ 构造：bucketCount = maxNum/64 + 1，size = maxNum+1（栅栏问题）？
+ *     ✅ 动态扩容：size = requiredBucket * 64（按桶对齐），不是 num+1？
+ * ────────────────────────────────────────────────────────────────────────────
+ * 【API 速查】
+ *
+ *     0. NewBitmap(maxNum int) (*Bitmap, error)        // 创建固定大小位图，O(n)
+ *     1. (b *Bitmap) set(num int) error                // 置位，O(1)
+ *     2. (b *Bitmap) clear(num int) error              // 清零，O(1)
+ *     3. (b *Bitmap) has(num int) (bool, error)        // 检查存在性，O(1)
+ *     4. (b *Bitmap) count() int                       // 统计置位数量，O(n/64)
+ *     5. (b *Bitmap) dynamicSet(num int) error         // 动态置位（自动扩容），均摊O(1)
+ * ============================================================================
+ */
+
 package main
 
 import (
 	"errors"
 	"fmt"
 )
-
-// 位图（Bitmap）实现，用uint64切片高效存储比特位：
-// 🌟技巧1：位索引定位技巧 - 一个uint64存储64个比特位，bucketIndex = num/64，bitIndex = num%64
-// 🌟技巧2：位运算操作技巧 - 置位用 |=，清零用 &^=（Go按位清零），检查用 & != 0，都是O(1)操作
-// 🌟技巧3：内存压缩技巧 - 相比bool切片，内存占用仅为1/8，适合海量数据的布尔标记场景
-
-// 0、func NewBitmap(maxNum int) (*Bitmap, error)
-// 1、func (b *Bitmap) set(num int) error
-// 2、func (b *Bitmap) clear(num int) error
-// 3、func (b *Bitmap) has(num int) (bool, error)
-// 4、func (b *Bitmap) count() int
-// 5、func (b *Bitmap) dynamicSet(num int) error
 
 // Bitmap 位图结构，用uint64切片存储比特位
 type Bitmap struct {
@@ -28,11 +103,13 @@ func NewBitmap(maxNum int) (*Bitmap, error) {
 		return nil, errors.New("maxNum必须是非负数")
 	}
 
-	// 计算需要的uint64数量：(maxNum + 64) / 64
-	bucketCount := (maxNum + 64) / 64
+	bucketCount := maxNum/64 + 1 // 计算需要的bucket数量(数量=索引+1)
+
 	return &Bitmap{
 		buckets: make([]uint64, bucketCount),
-		size:    maxNum + 1,
+		// 用户指定的精确上界
+		// 区间[0,maxNum]元素个数=maxNum-0+1，闭区间元素个数公式，栅栏问题
+		size: maxNum + 1,
 	}, nil
 }
 
@@ -51,14 +128,14 @@ func (b *Bitmap) dynamicSet(num int) error {
 	if num < 0 {
 		return errors.New("num必须是非负数")
 	}
-	// 计算需要的bucket数量
-	requiredBucket := num/64 + 1
-	// 扩容
-	if requiredBucket > len(b.buckets) {
+
+	requiredBucket := num/64 + 1 // 计算需要的bucket数量(数量=索引+1)
+
+	if requiredBucket > len(b.buckets) { // 是否需要扩容
 		newBits := make([]uint64, requiredBucket)
 		copy(newBits, b.buckets)
 		b.buckets = newBits
-		b.size = requiredBucket * 64
+		b.size = requiredBucket * 64 // 扩容后按bucket对齐的实际容量
 	}
 	return b.set(num)
 }
@@ -97,7 +174,7 @@ func (b *Bitmap) count() int {
 	return count
 }
 
-// popcount 统计一个uint64中1的个数（内置函数优化）
+// 统计一个uint64中1的个数（内置函数优化）
 func popcount(x uint64) int {
 	if x == 0 {
 		return 0
