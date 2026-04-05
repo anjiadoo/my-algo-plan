@@ -120,9 +120,9 @@ const (
 
 // skipNode 跳表节点，对应 Redis SortedSet 中的一个元素
 type skipNode struct {
-	member  string  // 唯一成员名，对应 Redis 的 member
-	score   float64 // 排序分值，对应 Redis 的 score
-	forward []*skipNode
+	member  string      // 唯一成员名，对应 Redis 的 member
+	score   float64     // 排序分值，对应 Redis 的 score
+	forward []*skipNode // forward类似单链表中的next指针，只不过跳表有多个不同next指针，用数组来表示而已，下标表示第几层
 }
 
 // SortedSet Redis ZSet 简化版：跳表 + 哈希表双索引
