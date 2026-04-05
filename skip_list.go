@@ -143,8 +143,8 @@ func NewSortedSet() *SortedSet {
 	}
 }
 
-// zRandomLevel 随机生成新节点的层数
-func zRandomLevel() int {
+// randomLevel 随机生成新节点的层数
+func randomLevel() int {
 	lvl := 1
 	for rand.Float64() < probability && lvl < maxLevel {
 		lvl++
@@ -152,29 +152,29 @@ func zRandomLevel() int {
 	return lvl
 }
 
-// zLess 跳表的双键比较：先按 score 升序，score 相同时按 member 字典序升序
+// less 跳表的双键比较：先按 score 升序，score 相同时按 member 字典序升序
 // 所有需要在跳表中精确定位节点的操作都必须用这个比较，而不是只比较 score
-func zLess(aScore float64, aMember string, bScore float64, bMember string) bool {
+func less(aScore float64, aMember string, bScore float64, bMember string) bool {
 	if aScore != bScore {
 		return aScore < bScore
 	}
 	return aMember < bMember
 }
 
-// zInsertNode 在跳表中插入节点（内部方法，不操作 dict）
-func (z *SortedSet) zInsertNode(member string, score float64) {
+// insertNode 在跳表中插入节点（内部方法，不操作 dict）
+func (z *SortedSet) insertNode(member string, score float64) {
 	update := make([]*skipNode, maxLevel)
 	curr := z.head
 
 	// 从最高层往下，找每层的前驱：前驱满足 (score,member) < 新节点
 	for i := z.level - 1; i >= 0; i-- {
-		for curr.forward[i] != nil && zLess(curr.forward[i].score, curr.forward[i].member, score, member) {
+		for curr.forward[i] != nil && less(curr.forward[i].score, curr.forward[i].member, score, member) {
 			curr = curr.forward[i]
 		}
 		update[i] = curr
 	}
 
-	newLvl := zRandomLevel()
+	newLvl := randomLevel()
 	if newLvl > z.level {
 		for i := z.level; i < newLvl; i++ {
 			update[i] = z.head // 新层的前驱只有 head
@@ -193,13 +193,13 @@ func (z *SortedSet) zInsertNode(member string, score float64) {
 	}
 }
 
-// zDeleteNode 从跳表中删除节点（内部方法，不操作 dict）
-func (z *SortedSet) zDeleteNode(member string, score float64) bool {
+// deleteNode 从跳表中删除节点（内部方法，不操作 dict）
+func (z *SortedSet) deleteNode(member string, score float64) bool {
 	update := make([]*skipNode, maxLevel)
 	curr := z.head
 
 	for i := z.level - 1; i >= 0; i-- {
-		for curr.forward[i] != nil && zLess(curr.forward[i].score, curr.forward[i].member, score, member) {
+		for curr.forward[i] != nil && less(curr.forward[i].score, curr.forward[i].member, score, member) {
 			curr = curr.forward[i]
 		}
 		update[i] = curr
@@ -233,10 +233,10 @@ func (z *SortedSet) ZAdd(member string, score float64) {
 		if oldScore == score {
 			return // score 没变，无需任何操作
 		}
-		z.zDeleteNode(member, oldScore) // 从跳表旧位置摘除
+		z.deleteNode(member, oldScore) // 从跳表旧位置摘除
 		z.size--
 	}
-	z.zInsertNode(member, score)
+	z.insertNode(member, score)
 	z.dict[member] = score
 	z.size++
 }
@@ -248,7 +248,7 @@ func (z *SortedSet) ZRem(member string) bool {
 	if !exists {
 		return false
 	}
-	z.zDeleteNode(member, score)
+	z.deleteNode(member, score)
 	delete(z.dict, member)
 	z.size--
 	return true
