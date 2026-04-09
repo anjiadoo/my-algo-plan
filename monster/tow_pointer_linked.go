@@ -133,9 +133,11 @@ func mergeTwoLists(list1 *ListNode, list2 *ListNode) *ListNode {
 
 // 分隔链表 https://leetcode.cn/problems/partition-list/description/
 func partition(head *ListNode, x int) *ListNode {
+	// 存放「小于x」的节点
 	dummy1 := &ListNode{}
 	p1 := dummy1
 
+	// 存放「大于等于x」的节点
 	dummy2 := &ListNode{Next: head}
 	p2 := dummy2
 
@@ -143,12 +145,9 @@ func partition(head *ListNode, x int) *ListNode {
 		if p2.Next.Val < x {
 			p1.Next = p2.Next
 			p1 = p1.Next
-
-			//删除 p2
-			p2.Next = p2.Next.Next
+			p2.Next = p2.Next.Next // 把p2中小于x的删除
 		} else {
-			//移动 p2
-			p2 = p2.Next
+			p2 = p2.Next // p2中的节点>=x，保留并移动p2
 		}
 	}
 
@@ -568,14 +567,18 @@ func findDuplicate(nums []int) int {
 
 // 反转链表-递归
 func reverse(head *ListNode) *ListNode {
+	// head == nil 空链表的情况
+	// head.Next == nil 非空链表最后一个节点就是【新头节点】
 	if head == nil || head.Next == nil {
 		return head
 	}
+
+	// head->next1->next2->next3->nil
+	// newHead => next3->next2->next1->nil
+	// 让下一个节点(next1)指回我：newHead => next3->next2->next1->head->*
+	// 我指向空（断尾）：newHead => next3->next2->next1->head->nil
+
 	newHead := reverse(head.Next)
-	// head->next1->next2->next3
-	// newHead => next3->next2->next1
-	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->*
-	// 需要把head的next指针置为空：newHead => next3->next2->next1->head->nil
 	head.Next.Next = head
 	head.Next = nil
 	return newHead
@@ -583,27 +586,37 @@ func reverse(head *ListNode) *ListNode {
 
 // 反转链表-迭代
 func reverse1(head *ListNode) *ListNode {
+	// head == nil 空链表的情况
+	// head.Next == nil 只有一个节点的情况（不用反转了）
+
 	if head == nil || head.Next == nil {
 		return head
 	}
+
+	// head->node1->node2->node3->node4->node5->nil
 	// 由于单链表的结构，至少要用三个指针才能完成迭代反转
-	// pre->cur->nxt
+	// pre(nil)，cur->nxt(初始状态)
 	// cur->pre
 	// pre = cur
 	// cur = nxt
-	// nxt = nxt.Next
-	var pre, cur, nxt *ListNode
-	pre, cur, nxt = nil, head, head.Next
+	// nxt = nxt.Next（注意判空）
+
+	pre := (*ListNode)(nil)
+	cur := head
+	nxt := head.Next
+
 	for cur != nil {
-		// 逐个结点反转
+		// 当前结点反转
 		cur.Next = pre
-		// 更新指针位置
+
+		// 整体向右平移
 		pre = cur
 		cur = nxt
-		if nxt != nil {
+		if nxt != nil { //（注意判空）
 			nxt = nxt.Next
 		}
 	}
+	// 此时的 pre 是反转后的头结点
 	return pre
 }
 
@@ -611,15 +624,18 @@ var tail *ListNode
 
 // 反转链表前n个节点
 func reverseN(head *ListNode, n int) *ListNode {
+	// 遍历到第n个节点时，保留后面的节点顺序
 	if n == 1 {
 		tail = head.Next
 		return head
 	}
+
+	// head->next1->next2->next3->nil
+	// newHead => next2->next1->next3->nil
+	// 让下一个节点(next1)指回我：newHead => next2->next1->head->*
+	// 我指向尾（接尾）：newHead => next3->next2->next1->head->tail
+
 	newHead := reverseN(head.Next, n-1)
-	// head->next1->next2->next3
-	// newHead => next3->next2->next1
-	// 把head放到next1的下一个节点：newHead => next3->next2->next1->head->*
-	// 需要把head的next指针置为tail：newHead => next3->next2->next1->head->tail
 	head.Next.Next = head
 	head.Next = tail
 	return newHead
@@ -627,18 +643,24 @@ func reverseN(head *ListNode, n int) *ListNode {
 
 // 反转链表前n个节点
 func reverseN1(head *ListNode, n int) *ListNode {
+	// head == nil 空链表的情况
+	// head.Next == nil 只有一个节点的情况（不用反转了）
 	if head == nil || head.Next == nil {
 		return head
 	}
+
 	// head->node1->node2->node3->node4->node5->nil
 	// 由于单链表的结构，至少要用三个指针才能完成迭代反转
-	// pre->cur->nxt
+	// pre(nil)，cur->nxt(初始状态)
 	// cur->pre
 	// pre = cur
 	// cur = nxt
 	// nxt = nxt.Next
-	var pre, cur, nxt *ListNode
-	pre, cur, nxt = nil, head, head.Next
+
+	pre := (*ListNode)(nil)
+	cur := head
+	nxt := head.Next
+
 	for n > 0 {
 		// 逐个结点反转(指针指向pre节点)
 		cur.Next = pre
@@ -678,8 +700,8 @@ func reverseBetween2(head *ListNode, m int, n int) *ListNode {
 	if m == 1 {
 		return reverseN(head, n)
 	}
-	tail := reverseBetween2(head.Next, m-1, n-1)
-	head.Next = tail
+	next := reverseBetween2(head.Next, m-1, n-1)
+	head.Next = next
 	return head
 }
 
