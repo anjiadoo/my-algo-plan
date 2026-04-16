@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math"
 )
 
@@ -283,55 +282,82 @@ func containsNearbyDuplicate(nums []int, k int) bool {
 
 // 存在重复元素III https://leetcode.cn/problems/contains-duplicate-iii/description/
 func containsNearbyAlmostDuplicate(nums []int, indexDiff int, valueDiff int) bool {
-	// 如何在窗口[left,right)中快速判断是否有元素之差小于t的两个元素呢？
-	// 这需要利用二叉搜索树结构寻找「地板元素」和「天花板元素」的特性
-
-	if indexDiff <= 0 || valueDiff < 0 {
-		return false
-	}
-
-	getID := func(x, w int) int {
-		if x >= 0 {
-			return x / w
-		}
-		return (x+1)/w - 1
-	}
-
+	bucketSize := valueDiff + 1
 	window := make(map[int]int)
-	w := valueDiff + 1
+	left, right := 0, 0
 
-	for i := 0; i < len(nums); i++ {
-		m := getID(nums[i], w)
-
-		// 为了防止 i == j，所以在扩大窗口之前先判断是否有符合题意的索引对 (i, j)
-		// 查找略大于 nums[right] 的那个元素
-		if _, ok := window[m]; ok {
-			return true
+	getBucketIdx := func(x int) int {
+		if x >= 0 {
+			return x / bucketSize
 		}
-		// 查找略小于 nums[right] 的那个元素
-		if v, ok := window[m-1]; ok && math.Abs(float64(nums[i]-v)) < float64(w) {
-			return true
-		}
-		if v, ok := window[m+1]; ok && math.Abs(float64(nums[i]-v)) < float64(w) {
-			return true
-		}
-
-		// 扩大窗口
-		window[m] = nums[i]
-
-		if i >= indexDiff {
-			// 缩小窗口
-			delete(window, getID(nums[i-indexDiff], w))
-		}
+		return (x+1)/bucketSize - 1
 	}
 
+	// 解题关键：如何在窗口 [left,right] 中快速判断是否有元素之差小于 t 的两个元素呢❓
+	// 这需要利用：桶排序的「地板元素」&「天花板元素」的特性，具体如下：
+	// 把数轴切成宽度为 valueDiff+1 的桶，将"是否存在差值 ≤ valueDiff 的元素"这个问题，
+	// 转化为"只需检查当前桶和左右相邻桶"这个 O(1) 操作。配合滑动窗口维护下标约束，整体时间复杂度 O(n)。
+
+	for right < len(nums) {
+		bucketIdx := getBucketIdx(nums[right])
+
+		// 情况1: 当前桶存在元素之差小于等于indexDiff的元素
+		if _, ok := window[bucketIdx]; ok {
+			return true
+		}
+		// 情况2: 检查左边桶，可能存在，须判断
+		if num, ok := window[bucketIdx-1]; ok && math.Abs(float64(nums[right]-num)) <= float64(valueDiff) {
+			return true
+		}
+		// 情况3: 检查右边桶，可能存在，须判断
+		if num, ok := window[bucketIdx+1]; ok && math.Abs(float64(nums[right]-num)) <= float64(valueDiff) {
+			return true
+		}
+
+		window[bucketIdx] = nums[right]
+		right++
+
+		// 缩小窗口
+		if right-left > indexDiff {
+			delete(window, getBucketIdx(nums[left]))
+			left++
+		}
+	}
 	return false
+}
+
+// 长度最小的子数组 https://leetcode.cn/problems/minimum-size-subarray-sum/description/
+func minSubArrayLen(target int, nums []int) int {
+	// 给定一个含有 n 个正整数的数组和一个正整数 target 。
+	// 找出该数组中满足其总和大于等于 target 的长度最小的 子数组 [numsl, numsl+1, ..., numsr-1, numsr] ，并返回其长度。如果不存在符合条件的子数组，返回 0 。
+	// 输入：target = 7, nums = [2,3,1,2,4,3]
+	// 输出：2
+	// 解释：子数组 [4,3] 是该条件下的长度最小的子数组。
+	return -1
+}
+
+// 至少有K个重复字符的最长子串 https://leetcode.cn/problems/longest-substring-with-at-least-k-repeating-characters/description/
+func longestSubstring(s string, k int) int {
+	// 给你一个字符串 s 和一个整数 k ，请你找出 s 中的最长子串， 要求该子串中的每一字符出现次数都不少于 k 。返回这一子串的长度。
+	// 如果不存在这样的子字符串，则返回 0。
+	// 示例 1：
+	// 输入：s = "aaabb", k = 3
+	// 输出：3
+	// 解释：最长子串为 "aaa" ，其中 'a' 重复了 3 次。
+	// 示例 2：
+	// 输入：s = "ababbc", k = 2
+	// 输出：5
+	// 解释：最长子串为 "ababb" ，其中 'a' 重复了 2 次， 'b' 重复了 3 次。
+	return -1
 }
 
 func main() {
 
-	fmt.Println(containsNearbyAlmostDuplicate([]int{1, 2, 3, 1}, 3, 0))
-	fmt.Println(containsNearbyAlmostDuplicate([]int{1, 5, 9, 1, 5, 9}, 2, 3))
+	//fmt.Println(containsNearbyAlmostDuplicate([]int{1, 2, 3, 1}, 3, 0))
+	//fmt.Println(containsNearbyAlmostDuplicate([]int{1, 5, 9, 1, 5, 9}, 2, 3))
+
+	//fmt.Println(containsNearbyAlmostDuplicate([]int{1, 2, 3, 1}, 3, 0))
+	//fmt.Println(containsNearbyAlmostDuplicate([]int{1, 5, 9, 1, 5, 9}, 2, 3))
 
 	//fmt.Println(containsNearbyDuplicate([]int{1, 2, 3, 1}, 3))
 	//fmt.Println(containsNearbyDuplicate([]int{1, 0, 1, 1}, 1))
