@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 )
 
@@ -229,13 +230,115 @@ func longestOnes(nums []int, k int) int {
 
 // 替换后的最长重复字符 https://leetcode.cn/problems/longest-repeating-character-replacement/description/
 func characterReplacement(s string, k int) int {
-	// 记录窗口中字符的最多重复次数
-	// 记录这个值的意义在于，最划算的替换方法肯定是把其他字符替换成出现次数最多的那个字符
+	windowCharCount := make(map[byte]int)
+	left, right := 0, 0
+	res := -1
 
-	return -1
+	// 记录窗口中的字符的最大重复次数
+	// 因为最划算的替换方法是：把其他字符替换成出现次数最多的那个字符
+	maxCharCount := 0
+
+	for right < len(s) {
+		ch := s[right]
+		right++
+		windowCharCount[ch]++
+
+		maxCharCount = max(maxCharCount, windowCharCount[ch])
+
+		if right-left-maxCharCount > k {
+			d := s[left]
+			left++
+			windowCharCount[d]--
+		}
+
+		// 求最大一般都在这个位置
+		res = max(res, right-left)
+	}
+
+	return res
+}
+
+// 存在重复元素II https://leetcode.cn/problems/contains-duplicate-ii/
+func containsNearbyDuplicate(nums []int, k int) bool {
+	window := make(map[int]bool)
+	left, right := 0, 0
+
+	for right < len(nums) {
+		num := nums[right]
+		if window[num] {
+			return true
+		}
+
+		window[num] = true
+		right++
+
+		if right-left > k {
+			d := nums[left]
+			left++
+			delete(window, d)
+		}
+	}
+	return false
+}
+
+// 存在重复元素III https://leetcode.cn/problems/contains-duplicate-iii/description/
+func containsNearbyAlmostDuplicate(nums []int, indexDiff int, valueDiff int) bool {
+	// 如何在窗口[left,right)中快速判断是否有元素之差小于t的两个元素呢？
+	// 这需要利用二叉搜索树结构寻找「地板元素」和「天花板元素」的特性
+
+	if indexDiff <= 0 || valueDiff < 0 {
+		return false
+	}
+
+	getID := func(x, w int) int {
+		if x >= 0 {
+			return x / w
+		}
+		return (x+1)/w - 1
+	}
+
+	window := make(map[int]int)
+	w := valueDiff + 1
+
+	for i := 0; i < len(nums); i++ {
+		m := getID(nums[i], w)
+
+		// 为了防止 i == j，所以在扩大窗口之前先判断是否有符合题意的索引对 (i, j)
+		// 查找略大于 nums[right] 的那个元素
+		if _, ok := window[m]; ok {
+			return true
+		}
+		// 查找略小于 nums[right] 的那个元素
+		if v, ok := window[m-1]; ok && math.Abs(float64(nums[i]-v)) < float64(w) {
+			return true
+		}
+		if v, ok := window[m+1]; ok && math.Abs(float64(nums[i]-v)) < float64(w) {
+			return true
+		}
+
+		// 扩大窗口
+		window[m] = nums[i]
+
+		if i >= indexDiff {
+			// 缩小窗口
+			delete(window, getID(nums[i-indexDiff], w))
+		}
+	}
+
+	return false
 }
 
 func main() {
+
+	fmt.Println(containsNearbyAlmostDuplicate([]int{1, 2, 3, 1}, 3, 0))
+	fmt.Println(containsNearbyAlmostDuplicate([]int{1, 5, 9, 1, 5, 9}, 2, 3))
+
+	//fmt.Println(containsNearbyDuplicate([]int{1, 2, 3, 1}, 3))
+	//fmt.Println(containsNearbyDuplicate([]int{1, 0, 1, 1}, 1))
+	//fmt.Println(containsNearbyDuplicate([]int{1, 2, 3, 1, 2, 3}, 2))
+
+	//fmt.Println(characterReplacement("ABAB", 2))
+	//fmt.Println(characterReplacement("AABABBA", 1))
 
 	//fmt.Println(longestOnes([]int{0, 0, 1, 1, 1, 0, 0}, 0))
 	//fmt.Println(longestOnes([]int{1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0}, 2))
