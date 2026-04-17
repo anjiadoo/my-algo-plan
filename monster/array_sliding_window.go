@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 )
 
@@ -328,30 +329,83 @@ func containsNearbyAlmostDuplicate(nums []int, indexDiff int, valueDiff int) boo
 
 // 长度最小的子数组 https://leetcode.cn/problems/minimum-size-subarray-sum/description/
 func minSubArrayLen(target int, nums []int) int {
-	// 给定一个含有 n 个正整数的数组和一个正整数 target 。
-	// 找出该数组中满足其总和大于等于 target 的长度最小的 子数组 [numsl, numsl+1, ..., numsr-1, numsr] ，并返回其长度。如果不存在符合条件的子数组，返回 0 。
-	// 输入：target = 7, nums = [2,3,1,2,4,3]
-	// 输出：2
-	// 解释：子数组 [4,3] 是该条件下的长度最小的子数组。
-	return -1
+	left, right := 0, 0
+	windowSum := 0
+	res := math.MaxInt
+
+	for right < len(nums) {
+		windowSum += nums[right]
+		right++
+
+		for windowSum >= target && left < right {
+			res = min(res, right-left)
+			windowSum -= nums[left]
+			left++
+		}
+	}
+	if res == math.MaxInt {
+		return 0
+	}
+	return res
 }
 
 // 至少有K个重复字符的最长子串 https://leetcode.cn/problems/longest-substring-with-at-least-k-repeating-characters/description/
 func longestSubstring(s string, k int) int {
-	// 给你一个字符串 s 和一个整数 k ，请你找出 s 中的最长子串， 要求该子串中的每一字符出现次数都不少于 k 。返回这一子串的长度。
-	// 如果不存在这样的子字符串，则返回 0。
-	// 示例 1：
-	// 输入：s = "aaabb", k = 3
-	// 输出：3
-	// 解释：最长子串为 "aaa" ，其中 'a' 重复了 3 次。
-	// 示例 2：
-	// 输入：s = "ababbc", k = 2
-	// 输出：5
-	// 解释：最长子串为 "ababb" ，其中 'a' 重复了 2 次， 'b' 重复了 3 次。
-	return -1
+	// 原题没有缩小缩小窗口的时机，那么就自己创造缩窗的时机，题目改写成：
+	// 在s中寻找仅含有count种字符，且每种字符出现次数都大于k的最长子串，count取值范围[1~26]，因为题目说了只含小写字符
+	var res int
+	for i := 1; i <= 26; i++ {
+		res = max(res, _longestSubstring(s, k, i))
+	}
+	return res
+}
+
+func _longestSubstring(s string, k, count int) int {
+	window := make(map[byte]int)
+	left, right := 0, 0
+	valid := 0
+	res := math.MinInt
+
+	for right < len(s) {
+		ch := s[right]
+		right++
+
+		window[ch]++
+		if window[ch] == k {
+			valid++
+		}
+
+		for len(window) > count {
+			d := s[left]
+			left++
+
+			if window[d] == k {
+				valid--
+			}
+			window[d]--
+			if window[d] == 0 {
+				delete(window, d)
+			}
+		}
+		if valid == len(window) {
+			res = max(res, right-left)
+		}
+	}
+	if res == math.MinInt {
+		return 0
+	}
+	return res
 }
 
 func main() {
+
+	fmt.Println(longestSubstring("aaabb", 3))
+	fmt.Println(longestSubstring("ababbc", 2))
+
+	//fmt.Println(minSubArrayLen(11, []int{1, 2, 3, 4, 5}))
+	//fmt.Println(minSubArrayLen(7, []int{2, 3, 1, 2, 4, 3}))
+	//fmt.Println(minSubArrayLen(4, []int{1, 4, 4}))
+	//fmt.Println(minSubArrayLen(11, []int{1, 1, 1, 1, 1, 1, 1, 1}))
 
 	//fmt.Println(containsNearbyAlmostDuplicate([]int{1, 2, 3, 1}, 3, 0))
 	//fmt.Println(containsNearbyAlmostDuplicate([]int{1, 5, 9, 1, 5, 9}, 2, 3))
