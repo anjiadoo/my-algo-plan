@@ -439,11 +439,169 @@ func findClosestElements(arr []int, k int, x int) []int {
 	return res
 }
 
+// 搜索插入位置 https://leetcode.cn/problems/search-insert-position/description/
+func searchInsert(nums []int, target int) int {
+	left, right := 0, len(nums)-1
+	for left <= right {
+		mid := left + (right-left)/2
+		if nums[mid] == target {
+			return mid
+		} else if nums[mid] > target {
+			right = mid - 1
+		} else if nums[mid] < target {
+			left = mid + 1
+		}
+	}
+	return left
+}
+
+// 寻找峰值 https://leetcode.cn/problems/find-peak-element/
+func findPeakElement(nums []int) int {
+	// 题目前提：对于所有有效的i都有nums[i]!=nums[i+1]
+	left, right := 0, len(nums)-1
+	for left <= right {
+		mid := left + (right-left)/2
+		if mid+1 == len(nums) {
+			return mid
+		} else if nums[mid] > nums[mid+1] {
+			right = mid - 1
+		} else if nums[mid] < nums[mid+1] {
+			left = mid + 1
+		}
+	}
+	return left
+}
+
+// 山脉数组的峰顶索引 https://leetcode.cn/problems/peak-index-in-a-mountain-array/description/
+func peakIndexInMountainArray(arr []int) int {
+	left, right := 0, len(arr)-1
+	for left <= right {
+		mid := left + (right-left)/2
+		if mid+1 == len(arr) {
+			return mid
+		} else if arr[mid] > arr[mid+1] {
+			right = mid - 1
+		} else if arr[mid] < arr[mid+1] {
+			left = mid + 1
+		}
+	}
+	return left
+}
+
+// 搜索旋转排序数组 https://leetcode.cn/problems/search-in-rotated-sorted-array/description/
+func search(nums []int, target int) int {
+	// 二分搜索只能在有序的数组上查找
+	// 本题须先确定有序的区间范围
+
+	left, right := 0, len(nums)-1
+	for left <= right {
+		mid := left + (right-left)/2
+		if nums[mid] == target {
+			return mid
+		}
+		if nums[mid] >= nums[left] {
+			// 在左侧, 此时[left..mid]有序
+			if target >= nums[left] && target <= nums[mid] {
+				right = mid - 1
+			} else {
+				left = mid + 1
+			}
+		} else {
+			//在右侧, 此时[mid..right]有序
+			if target >= nums[mid] && target <= nums[right] {
+				left = mid + 1
+			} else {
+				right = mid - 1
+			}
+		}
+	}
+	return -1
+}
+
+// 搜索旋转排序数组II https://leetcode.cn/problems/search-in-rotated-sorted-array-ii/description/
+func searchII(nums []int, target int) bool {
+	// 0、跳过重复元素
+	// 1、确定 mid 中点落在「断崖」左侧还是右侧。
+	// 2、在第 1 步确定的结果之上，根据target和nums[left],nums[right],nums[mid]的相对大小收缩搜索区间。
+
+	left, right := 0, len(nums)-1
+	for left <= right {
+		for left < len(nums)-1 && nums[left] == nums[left+1] {
+			left++
+		}
+		for right > 0 && nums[right] == nums[right-1] {
+			right--
+		}
+
+		mid := left + (right-left)/2
+		if nums[mid] == target {
+			return true
+		}
+		if nums[mid] >= nums[left] {
+			// 在左侧, 此时[left..mid]有序
+			if target >= nums[left] && target <= nums[mid] {
+				right = mid - 1
+			} else {
+				left = mid + 1
+			}
+		} else {
+			//在右侧, 此时[mid..right]有序
+			if target >= nums[mid] && target <= nums[right] {
+				left = mid + 1
+			} else {
+				right = mid - 1
+			}
+		}
+	}
+	return false
+}
+
+// 寻找旋转排序数组中的最小值 https://leetcode.cn/problems/find-minimum-in-rotated-sorted-array/description/
+func findMin(nums []int) int {
+	left, right := 0, len(nums)-1
+	for left < right {
+		mid := left + (right-left)/2
+		if nums[mid] > nums[right] {
+			// mid落在断崖左边,最小值在[mid+1,right]
+			left = mid + 1
+		} else {
+			// mid落在断崖右边(或本身就是最小值),最小值在[left,mid]
+			right = mid
+		}
+	}
+	return nums[left]
+}
+
 func main() {
 
-	fmt.Println(findClosestElements([]int{3, 5, 8, 10}, 2, 15))
-	fmt.Println(findClosestElements([]int{1, 2, 3, 4, 5}, 4, 3))
-	fmt.Println(findClosestElements([]int{1, 2, 3, 4, 5}, 4, -1))
+	fmt.Println(findMin([]int{5, 6, 7, 8, 1, 2, 3, 4}))
+	fmt.Println(findMin([]int{1, 2, 3, 4}))
+
+	//fmt.Println(searchII([]int{1, 0, 1, 1, 1}, 0))
+	//fmt.Println(searchII([]int{2, 5, 6, 0, 0, 1, 2}, 0))
+	//fmt.Println(searchII([]int{2, 5, 6, 0, 0, 1, 2}, 3))
+
+	//fmt.Println(search([]int{6, 7, 8, 9, 10, 1, 2, 3, 4, 5}, 10))
+	//fmt.Println(search([]int{6, 7, 8, 9, 10, 1, 2, 3, 4, 5}, 7))
+	//fmt.Println(search([]int{6, 7, 8, 9, 10, 1, 2, 3, 4, 5}, 4))
+	//fmt.Println(search([]int{6, 7, 8, 9, 10, 1, 2, 3, 4, 5}, 100))
+
+	//fmt.Println(peakIndexInMountainArray([]int{1, 2, 3, 4, 5, 4, 3, 2, 1}))
+	//fmt.Println(peakIndexInMountainArray([]int{10}))
+	//fmt.Println(peakIndexInMountainArray([]int{-1, 3, 5, 9, 3, 2, -10}))
+
+	//fmt.Println(findPeakElement([]int{1, 2, 3, 4, 5}))
+	//fmt.Println(findPeakElement([]int{5, 4, 3, 2, 1}))
+	//fmt.Println(findPeakElement([]int{1, 2, 3, 1}))
+	//fmt.Println(findPeakElement([]int{1, 2, 1, 3, 5, 6, 4}))
+
+	//fmt.Println(searchInsert([]int{1, 3, 5, 6}, 5))
+	//fmt.Println(searchInsert([]int{1, 3, 5, 6}, 2))
+	//fmt.Println(searchInsert([]int{1, 3, 5, 6}, 7))
+
+	//fmt.Println(findClosestElements([]int{3, 5, 8, 10}, 2, 15))
+	//fmt.Println(findClosestElements([]int{1, 2, 3, 4, 5}, 4, 3))
+	//fmt.Println(findClosestElements([]int{1, 2, 3, 4, 5}, 4, -1))
 
 	//fmt.Println(numMatchingSubseq("abcde", []string{"a", "bb", "acd", "ace"}))
 	//fmt.Println(numMatchingSubseq("dsahjpjauf", []string{"ahjpjau", "ja", "ahbwzgqnuk", "tnmlanowax"}))
