@@ -397,10 +397,56 @@ func numMatchingSubseq(s string, words []string) int {
 	return res
 }
 
+// 找到K个最接近的元素 https://leetcode.cn/problems/find-k-closest-elements/
+func findClosestElements(arr []int, k int, x int) []int {
+	leftBound := func(nums []int, x int) int {
+		left, right := 0, len(nums)-1
+		for left <= right {
+			mid := left + (right-left)/2
+			if nums[mid] == x {
+				right = mid - 1
+			} else if nums[mid] > x {
+				right = mid - 1
+			} else if nums[mid] < x {
+				left = mid + 1
+			}
+		}
+		return left
+	}
+
+	p := leftBound(arr, x)
+
+	// 因为p本身可能越界，选择两端都开的区间(left, right)
+	left, right := p-1, p
+
+	// 扩展区间，直到区间内包含k个元素
+	for right-left-1 < k {
+		if left == -1 {
+			right++
+		} else if right == len(arr) {
+			left--
+		} else if x-arr[left] > arr[right]-x {
+			right++
+		} else {
+			left--
+		}
+	}
+
+	var res []int
+	for i := left + 1; i < right; i++ {
+		res = append(res, arr[i])
+	}
+	return res
+}
+
 func main() {
 
-	fmt.Println(numMatchingSubseq("abcde", []string{"a", "bb", "acd", "ace"}))
-	fmt.Println(numMatchingSubseq("dsahjpjauf", []string{"ahjpjau", "ja", "ahbwzgqnuk", "tnmlanowax"}))
+	fmt.Println(findClosestElements([]int{3, 5, 8, 10}, 2, 15))
+	fmt.Println(findClosestElements([]int{1, 2, 3, 4, 5}, 4, 3))
+	fmt.Println(findClosestElements([]int{1, 2, 3, 4, 5}, 4, -1))
+
+	//fmt.Println(numMatchingSubseq("abcde", []string{"a", "bb", "acd", "ace"}))
+	//fmt.Println(numMatchingSubseq("dsahjpjauf", []string{"ahjpjau", "ja", "ahbwzgqnuk", "tnmlanowax"}))
 
 	//fmt.Println(searchMatrixII([][]int{
 	//	{1, 4, 7, 11, 15},
@@ -431,4 +477,5 @@ func main() {
 	//fmt.Println(rightBound([]int{-1, 1, 2, 3, 3, 3, 3, 3, 5, 6}, 3))
 	//fmt.Println(leftBound([]int{-1, 1, 2, 3, 3, 3, 3, 3, 5, 6}, 3))
 	//fmt.Println(binarySearch([]int{-1, 1, 2, 3, 3, 3, 3, 3, 5, 6}, 3))
+	fmt.Println("------END------")
 }
