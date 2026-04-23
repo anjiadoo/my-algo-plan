@@ -167,6 +167,8 @@
 package main
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -402,10 +404,46 @@ func longestCommonPrefix(strs []string) string {
 	return baseStr
 }
 
+// 优势洗牌 https://leetcode.cn/problems/advantage-shuffle/
+func advantageCount(nums1 []int, nums2 []int) []int {
+	type pair struct {
+		index int
+		value int
+	}
+
+	array2 := make([]pair, len(nums2))
+	for i := 0; i < len(nums1); i++ {
+		array2[i] = pair{index: i, value: nums2[i]}
+	}
+
+	// 按战力排序,用最快的比,比得过就比,比不过就用最差的糊弄
+	sort.Ints(nums1)
+	sort.Slice(array2, func(i, j int) bool {
+		return array2[i].value < array2[j].value
+	})
+
+	left, right := 0, len(nums1)-1
+	res := make([]int, len(nums1))
+
+	for i := len(nums1) - 1; i >= 0; i-- {
+		if nums1[right] > array2[i].value {
+			res[array2[i].index] = nums1[right]
+			right--
+		} else {
+			res[array2[i].index] = nums1[left]
+			left++
+		}
+	}
+	return res
+}
+
 func main() {
+	fmt.Println(advantageCount([]int{2, 7, 11, 15}, []int{1, 10, 4, 11}))
+	fmt.Println(advantageCount([]int{12, 24, 8, 32}, []int{13, 25, 32, 11}))
+
 	//fmt.Println(longestCommonPrefix([]string{"flower", "flow", "flight"}))
 	//fmt.Println(longestCommonPrefix([]string{"anjiadoo", "anji", "anjido"}))
-	
+
 	//fmt.Println(sortedSquares([]int{-4, -1, 0, 3, 10}))
 
 	//nums1 := []int{1, 2, 3, 0, 0, 0}
