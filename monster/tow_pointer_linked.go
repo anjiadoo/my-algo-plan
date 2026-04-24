@@ -779,9 +779,38 @@ func isPalindrome(head *ListNode) bool {
 	return res
 }
 
+// 重排链表 https://leetcode.cn/problems/reorder-list/description/
+func reorderList(head *ListNode) {
+	var stack []*ListNode
+	for p := head; p != nil; p = p.Next {
+		stack = append(stack, p)
+	}
+
+	p := head
+	for p != nil {
+		tail := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		// 结束条件
+		if p == tail || p.Next == tail {
+			tail.Next = nil
+			break
+		}
+
+		next := p.Next
+		p.Next = tail
+		tail.Next = next
+		p = next
+	}
+}
+
 func main() {
+
 	l1 := NewMyListNode([]int{1, 2, 3, 4, 5, 6, 4, 3, 2, 1})
 	fmt.Println(isPalindrome(l1))
+
+	//reorderList(NewMyListNode([]int{1, 2, 3, 4}))
+	//reorderList(NewMyListNode([]int{1, 2, 3, 4, 5}))
 
 	//l1 := NewMyListNode([]int{1, 2, 3, 4, 5, 6, 7, 8})
 	//l0 := swapPairs(l1)

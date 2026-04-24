@@ -29,14 +29,50 @@ func simplifyPath(path string) string {
 	return "/" + strings.Join(stack, "/")
 }
 
-// 重排链表 https://leetcode.cn/problems/reorder-list/description/
-func reorderList(head *ListNode) {
+// 有效的括号 https://leetcode.cn/problems/valid-parentheses/description/
+func isValid(s string) bool {
+	var stack []byte
+	for _, ch := range s {
+		switch ch {
+		case '(', '{', '[':
+			stack = append(stack, byte(ch))
+		case ')':
+			if len(stack) == 0 || stack[len(stack)-1] != '(' {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		case '}':
+			if len(stack) == 0 || stack[len(stack)-1] != '{' {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		case ']':
+			if len(stack) == 0 || stack[len(stack)-1] != '[' {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	if len(stack) > 0 {
+		return false
+	}
+	return true
+}
 
+// 逆波兰表达式求值 https://leetcode.cn/problems/evaluate-reverse-polish-notation/
+func evalRPN(tokens []string) int {
+	return -1
 }
 
 func main() {
-	fmt.Println(simplifyPath("/home/"))
-	fmt.Println(simplifyPath("/home//foo/"))
-	fmt.Println(simplifyPath("/home/user/Documents/../Pictures"))
-	fmt.Println(simplifyPath("/../"))
+
+	fmt.Println(isValid("()"))
+	//fmt.Println(isValid("()[]{}"))
+	//fmt.Println(isValid("([])"))
+	//fmt.Println(isValid("([)]"))
+
+	//fmt.Println(simplifyPath("/home/"))
+	//fmt.Println(simplifyPath("/home//foo/"))
+	//fmt.Println(simplifyPath("/home/user/Documents/../Pictures"))
+	//fmt.Println(simplifyPath("/../"))
 }
