@@ -804,7 +804,7 @@ func reorderList(head *ListNode) {
 	}
 }
 
-func main() {
+func main1() {
 
 	l1 := NewMyListNode([]int{1, 2, 3, 4, 5, 6, 4, 3, 2, 1})
 	fmt.Println(isPalindrome(l1))
