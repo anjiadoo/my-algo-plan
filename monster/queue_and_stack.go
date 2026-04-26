@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -734,6 +735,7 @@ func maxSlidingWindow(nums []int, k int) []int {
 	return res
 }
 
+// MonotonicQueue 单调队列
 type MonotonicQueue struct {
 	data []int //原始队列
 	maxQ []int //单调递减，维护队列最大值
@@ -805,11 +807,43 @@ func longestSubarray(nums []int, limit int) int {
 	return res
 }
 
+// 和至少为K的最短子数组 https://leetcode.cn/problems/shortest-subarray-with-sum-at-least-k/description/
+func shortestSubarray(nums []int, k int) int {
+	preSum := make([]int, len(nums)+1)
+	for i := 1; i < len(preSum); i++ {
+		preSum[i] = preSum[i-1] + nums[i-1]
+	}
+
+	window := NewMonotonicQueue()
+	left, right := 0, 0
+	res := math.MaxInt
+
+	for right < len(preSum) {
+		window.push(preSum[right])
+		right++
+
+		for right < len(preSum) && len(window.data) > 0 &&
+			preSum[right]-window.getMin() >= k {
+			res = min(res, right-left)
+			window.pop()
+			left++
+		}
+	}
+	if res == math.MaxInt {
+		return -1
+	}
+	return res
+}
+
 func main() {
 
-	fmt.Println(longestSubarray([]int{8, 2, 4, 7}, 4))
-	fmt.Println(longestSubarray([]int{10, 1, 2, 4, 7, 2}, 5))
-	fmt.Println(longestSubarray([]int{4, 2, 2, 2, 4, 4, 2, 2}, 0))
+	fmt.Println(shortestSubarray([]int{1}, 1))
+	fmt.Println(shortestSubarray([]int{1, 2}, 4))
+	fmt.Println(shortestSubarray([]int{2, -1, 2}, 3))
+
+	//fmt.Println(longestSubarray([]int{8, 2, 4, 7}, 4))
+	//fmt.Println(longestSubarray([]int{10, 1, 2, 4, 7, 2}, 5))
+	//fmt.Println(longestSubarray([]int{4, 2, 2, 2, 4, 4, 2, 2}, 0))
 
 	//fmt.Println(maxSlidingWindow([]int{1, 3, -1, -3, 5, 3, 6, 7}, 3))
 	//fmt.Println(maxSlidingWindow([]int{1, 3, 1, 2, 0, 5}, 3))
