@@ -760,6 +760,10 @@ func (mq *MonotonicQueue) getMin() int {
 	return mq.minQ[0]
 }
 
+func (mq *MonotonicQueue) size() int {
+	return len(mq.data)
+}
+
 func (mq *MonotonicQueue) pop() int {
 	if len(mq.data) == 0 {
 		return -1
@@ -835,11 +839,43 @@ func shortestSubarray(nums []int, k int) int {
 	return res
 }
 
+// 环形子数组的最大和 https://leetcode.cn/problems/maximum-sum-circular-subarray/
+func maxSubarraySumCircular(nums []int) int {
+	// 求最大要穷举，遍历前缀和数组，每次把新进元素与
+	// 窗口内最小元素求和，取最大
+	// 注意：窗口大小为不超过nums长度
+
+	preSum := make([]int, 2*len(nums)+1)
+	for i := 1; i < len(preSum); i++ {
+		idx := (i - 1) % len(nums)
+		preSum[i] = preSum[i-1] + nums[idx]
+	}
+
+	window := NewMonotonicQueue()
+	window.push(preSum[0])
+	res := math.MinInt
+
+	for i := 1; i < len(preSum); i++ {
+		res = max(res, preSum[i]-window.getMin())
+
+		// 维护窗口的大小为nums数组的大小
+		if len(window.data) == len(nums) {
+			window.pop()
+		}
+		window.push(preSum[i])
+	}
+	return res
+}
+
 func main() {
 
-	fmt.Println(shortestSubarray([]int{1}, 1))
-	fmt.Println(shortestSubarray([]int{1, 2}, 4))
-	fmt.Println(shortestSubarray([]int{2, -1, 2}, 3))
+	fmt.Println(maxSubarraySumCircular([]int{1, -2, 3, -2}))
+	fmt.Println(maxSubarraySumCircular([]int{5, -3, 5}))
+	fmt.Println(maxSubarraySumCircular([]int{3, -2, 2, -3}))
+
+	//fmt.Println(shortestSubarray([]int{1}, 1))
+	//fmt.Println(shortestSubarray([]int{1, 2}, 4))
+	//fmt.Println(shortestSubarray([]int{2, -1, 2}, 3))
 
 	//fmt.Println(longestSubarray([]int{8, 2, 4, 7}, 4))
 	//fmt.Println(longestSubarray([]int{10, 1, 2, 4, 7, 2}, 5))
