@@ -529,27 +529,41 @@ func splitRedPacket(totalAmount, totalCount int) []int {
 **完整发包流程：**
 
 ```
-1. 前端生成全局唯一 request_id（雪花算法）
-2. 网关：IP/设备风控、限流（单用户5s最多发3个红包）
-3. 发包服务：
-   a. 幂等校验：send_transaction 表 uk_request_id，已存在直接返回已有 red_packet_id
-   b. 账户预扣款：同步调用账户服务扣除 total_amount（强一致，失败直接返回余额不足）
-   c. 内存计算：二倍均值法拆分 N 份金额（<1ms，纯 CPU 计算）
-   d. DB 本地事务：
-      - 写 red_packet 表（状态=待领）
-      - 写 red_packet_slot 表（持久化兜底）
-      - 写 send_transaction 表（status=1，标记成功）
-      - 写 account_flow 表（发包扣款流水）
-   e. 异步推送 Redis（事务提交后执行）：
-      - RPUSH rp:slots:{packet_id} amt1 amt2 ... amtN（一次性写入所有金额）
-      - HMSET rp:meta:{packet_id} total_amount X total_count N status 0
-      - EXPIRE rp:slots:{packet_id} 90000（25小时，留1小时余量用于退款）
-      - EXPIRE rp:meta:{packet_id} 90000
-   f. 发 MQ 消息通知群成员（topic_send_notify）
-   g. 返回 red_packet_id 给前端
+① 前端：雪花算法生成全局唯一 request_id
+   ↓
+② 网关层
+   ├─ IP/设备风控校验
+   └─ 单用户限流：5秒最多发包3个
+   ↓
+③ 发包服务
+   ├─ a. 幂等校验
+   │    依据 send_transaction 唯一索引 uk_request_id
+   │    已存在 → 直接返回已有 red_packet_id
+   │    不存在 → 继续执行
+   │
+   ├─ b. 账户预扣款（强一致）
+   │    同步扣总金额，余额不足直接终止流程
+   │
+   ├─ c. 内存极速拆包
+   │    二倍均值法拆分N份金额，纯CPU计算＜1ms
+   │
+   ├─ d. DB本地事务（原子执行）
+   │    1.写入 red_packet 表      （状态=待领）
+   │    2.写入 red_packet_slot 表 （金额持久化兜底）
+   │    3.写入 send_transaction 表（status=1，标记成功）
+   │    4.写入 account_flow 表    （发包扣款流水）
+   │
+   ├─ e. 事务提交后 → 异步写入Redis
+   │    批量RPUSH份额List + 元数据HMSET + 过期时间25小时
+   │    容灾：Redis失败不影响发包成功
+   │
+   ├─ f. 发送 MQ topic_send_notify 群通知
+   │
+   └─ g. 响应前端，返回 red_packet_id
 
-关键点：Redis 写入失败不影响发包成功（DB 已落盘），
-        Redis 写入失败后由定时任务从 red_packet_slot 表恢复 List（容灾）
+关键点：
+ - Redis 写入失败不影响发包成功（DB 已落盘），
+ - Redis 写入失败后由定时任务从 red_packet_slot 表恢复 List（容灾）
 ```
 
 ### 5.2 抢红包流程（核心，P99 < 50ms 目标）
@@ -602,49 +616,65 @@ return {1, tonumber(amount)}  -- 返回 {成功标志, 金额}
 **抢包完整链路：**
 
 ```
-① 本地缓存校验（go-cache，< 1ms，拦截约80%请求）：
-   - 红包状态（已抢完/已过期）→ 直接返回，不触碰Redis
-   - 用户已抢标记（uid+packet_id 本地Set，TTL=5s）→ 直接返回"已抢过"
-
-② Redis Lua 原子抢包（< 5ms）：
-   - 执行上述 Lua 脚本
-   - 返回 -2: 不存在/过期
-   - 返回 -1: 已抢过（同步更新本地缓存，下次直接拦截）
-   - 返回  0: 抢完了
-   - 返回  1: 抢到了，附带金额
-
-③ 异步写 DB + 入账（不在抢包关键路径上）：
-   - 发 RocketMQ 事务消息（topic_grab_record）
-   - 消费者：
-     a. 幂等写 grab_record 表（uk_packet_uid 唯一索引兜底）
-     b. 写 account_flow 表（状态=处理中）
-     c. 调账户服务入账
-     d. 更新 account_flow 状态=成功
-
-④ 立即返回用户（< 50ms P99）：
-   - "恭喜抢到 X.XX 元！"
-   - 不等 DB 写入完成，优先体验
+抢包请求入口
+        │
+        ▼
+① 本地缓存校验（go-cache，耗时 < 1ms，拦截80%请求）
+        ├─ 校验1：红包状态（已抢完/已过期）→ 直接返回，不碰Redis
+        ├─ 校验2：用户已抢标记（uid+packet_id 本地Set，TTL=5s）→ 直接返回"已抢过"
+        └─ 校验通过（未拦截）→ 进入下一步
+        │
+        ▼
+② Redis Lua 原子抢包（耗时 < 5ms）
+        执行预设Lua脚本，返回对应结果：
+        ├─ 返回 -2 → 红包不存在/已过期 → 结束流程
+        ├─ 返回 -1 → 已抢过 → 同步更新本地缓存（下次直接拦截）→ 结束流程
+        ├─ 返回  0 → 红包已抢完 → 结束流程
+        └─ 返回  1 → 抢包成功，附带抢到的金额 → 进入下一步
+        │
+        ▼
+③ 异步写DB + 入账（脱离抢包关键路径，不影响响应速度）
+        ├─ 发送 RocketMQ 事务消息（topic_grab_record）
+        ├─ 消费者消费消息，执行以下操作：
+        │   a. 幂等写入 grab_record 表（uk_packet_uid 唯一索引兜底防重）
+        │   b. 写入 account_flow 表（状态=处理中）
+        │   c. 调用账户服务，执行用户入账操作
+        │   d. 更新 account_flow 表状态=成功
+        └─ 异步执行，不阻塞下一步
+        │
+        ▼
+④ 立即返回用户（P99 < 50ms，优先保障用户体验）
+        └─ 返回提示："恭喜抢到 X.XX 元！"
+        （无需等待DB写入、入账完成，直接响应）
 ```
 
 ### 5.3 过期退款流程
 
 ```
-触发方式：定时任务（每5分钟扫描）+ Redis Key 过期事件（辅助）
+⓪ 触发入口：5分钟定时任务 + Redis Key过期事件（辅助）
+        ↓
+① 扫描 red_packet 表，筛选条件：status=0 且 expire_time < 当前时间
+        ↓
+② 查询 Redis 红包槽位List长度：LLEN rp:slots:{packet_id}
+   └─ 若 List已过期/不存在，从 red_packet_slot 表查未抢槽位
+        ↓
+③ 汇总计算：退款金额 = 剩余全部槽位金额之和
+        ↓
+④ 幂等写入 refund_task 表（uk_packet_id 防重复）
+        ↓
+⑤ 发送退款 MQ：topic_expire_refund
+        ↓
+⑥ 入账服务消费：退款入账到发包人，写 account_flow 流水
+        ↓
+⑦ 更新 red_packet.status = 4（标记已退款）
+        ↓
+⑧ UNLINK 异步清理红包相关Redis缓存Key
 
-1. 扫描 red_packet 表：status=0 且 expire_time < now
-2. 查询 Redis List 剩余长度（LLEN rp:slots:{packet_id}）
-   - 若 Redis 已过期（List不存在），从 red_packet_slot 表查未抢槽位
-3. 计算退款金额 = 剩余槽位金额之和
-4. 幂等写 refund_task 表（uk_packet_id 防重）
-5. 发 MQ 消息 topic_expire_refund
-6. 入账服务消费：退款入账到发包人，写 account_flow 流水
-7. 更新 red_packet.status = 4（已退款）
-8. 清理 Redis Key（UNLINK，异步删除）
-
-日级全量对账：
-   每日凌晨3点，全量扫描校验：
-   SUM(total_amount) = SUM(grab_record.amount) + SUM(refund_task.refund_amount)
-   差异 > 0 立即触发 P0 告警
+【日级全量兜底对账（凌晨3点）】
+全量金额校验：SUM(红包总金额) = SUM(抢到金额) + SUM(退款金额)
+                  ├────────────────────┬
+                  ▼                    ▼
+          差异＞0 触发P0告警          金额一致 对账通过
 ```
 
 ---
@@ -757,21 +787,23 @@ func consumeGrabRecord(msg *GrabRecordMsg) error {
 ### 8.1 防超抢（三层闭环）
 
 ```
-第一层：Redis List 天然上限
-  - LPOP 是 O(1) 原子操作
-  - List 里有多少元素，就最多弹出多少次
-  - 发包时校验：SUM(slots) = total_amount，写入 List
-  - 不管多少并发，List 空了就返回 nil，不可能超弹
-
-第二层：Lua 脚本原子检查
-  - 将"检查是否已抢"和"LPOP"放入同一个 Lua 脚本
-  - Redis 单线程执行 Lua，无竞态条件
-  - 防止 A 检查完还没抢，B 也检查完都看到有余量，然后都去抢同一份
-
-第三层：DB 唯一索引兜底
-  - grab_record 表 uk_packet_uid (red_packet_id, uid)
-  - 即使极端场景 Redis 主从切换导致重复消费，DB 层也会报 duplicate key
-  - 触发 duplicate key 时，判定为已处理，不做入账
+  【红包防超抢、防重抢 三层防护体系】
+        ↓
+① 第一层：Redis List 天然流量上限约束
+        ├─ LPOP 为 O(1) 原子操作
+        ├─ List元素总量固定，最多仅可弹出对应次数
+        ├─ 发包强校验：份额总额 = 红包总金额，批量写入List
+        └─ 并发再高，List为空直接拦截，从根源杜绝超抢
+        ↓
+② 第二层：Lua 脚本合并原子执行
+        ├─ 用户已抢校验 + LPOP 抢包 合并为一段Lua
+        ├─ Redis 单线程串行执行，无并发竞态窗口
+        └─ 避免分段检查带来的并发击穿、重复抢占问题
+        ↓
+③ 第三层：数据库唯一索引最终兜底
+        ├─ grab_record 表联合唯一索引：uk_packet_uid(red_packet_id,uid)
+        ├─ 抵御Redis主从切换、数据异常等极端故障
+        └─ 重复写入触发唯一索引冲突，拦截重复入账，保证数据绝对一致
 ```
 
 ### 8.2 防重复抢（四道拦截）
@@ -848,42 +880,46 @@ func grabFromShard(packetID string, uid int64, shardCount int) (int, bool) {
 ### 熔断策略
 
 ```
-触发条件（任一满足）：
-  - Redis P99 > 50ms（正常应 < 5ms）
-  - DB 写入 P99 > 500ms
-  - MQ 入账消息堆积 > 2万条
-  - 核心接口错误率 > 1%
-
-熔断策略：
-  - 半开试探：熔断 10s 后，放行 10% 流量探测
-  - 抢包接口：返回"红包太火爆，请1秒后再试"
-  - 入账延迟：不影响抢包，但延迟入账（最终一致）
-
-恢复策略：
-  - 连续 10 次请求成功率 > 99% → 关闭熔断
-  - 期间人工介入检查 + 扩容
+异常触发条件（满足任意一项）
+├─ Redis P99 > 50ms（正常标准 < 5ms）
+├─ DB写入 P99 > 500ms
+├─ MQ入账消息堆积 > 2万条
+└─ 核心接口错误率 > 1%
+        ↓
+触发系统熔断
+        ↓
+熔断执行策略
+├─ 半开试探：熔断10s后，放行10%流量健康探测
+├─ 抢包接口降级：固定返回「红包太火爆，请1秒后再试」
+└─ 入账链路延迟：不阻塞抢包主流程，仅延后入账、保障最终一致
+        ↓
+熔断恢复判定
+├─ 指标监控：连续10次请求成功率 ≥ 99%
+├─ 同步动作：人工介入排查问题、服务/缓存/中间件扩容
+└─ 自动关闭熔断，恢复全量正常流量
 ```
 
 ### 降级策略（分级）
 
 ```
-一级降级（轻度，业务正常）：
-  - 关闭抢包明细实时更新（展示"已有X人抢"）
-  - 关闭统计数据同步
-  - 关闭非核心通知（如系统消息推送）
+一、一级降级｜轻度降级，核心业务完全正常
+├─ 关闭抢包明细实时更新，仅展示固定文案「已有X人抢」
+├─ 关闭后台统计数据实时同步
+└─ 关停非核心业务推送（系统消息、次要通知）
 
-二级降级（中度，保核心）：
-  - 关闭发新红包功能（保障存量红包可抢）
-  - 延迟退款处理（改为定时任务而非实时）
-  - 关闭红包详情查询（只返回自己抢到的金额）
+二、二级降级｜中度降级，牺牲非核心、保核心抢包
+├─ 禁用新发红包功能，集中资源保障存量红包正常可抢
+├─ 退款链路降级：取消实时退款，统一改为定时任务批量处理
+└─ 限制红包详情查询，仅展示个人抢到金额，隐藏全局数据
 
-三级降级（重度，Redis 不可用）：
-  - 切换 DB 乐观锁模式
-  - SQL: UPDATE red_packet SET grabbed_count=grabbed_count+1,
-         grabbed_amount=grabbed_amount+? WHERE id=?
-         AND grabbed_count < total_count AND version=?
-  - 性能从 200万 QPS 降至 20万 TPS（短暂可接受）
-  - 禁止发新红包，集中资源保抢包
+三、三级降级｜重度降级，Redis完全不可用，DB兜底硬扛
+├─ 整体方案：切为数据库乐观锁并发控制模式
+├─ 核心兜底SQL：
+   UPDATE red_packet 
+   SET grabbed_count=grabbed_count+1,grabbed_amount=grabbed_amount+?
+   WHERE id=? AND grabbed_count < total_count AND version=?
+├─ 性能退化：由原 200万 QPS 降至 20万 TPS，短期可控
+└─ 全域限流：禁止新发红包，全部资源倾斜保障抢包核心链路
 ```
 
 ### 动态配置开关（ETCD，秒级生效）
@@ -921,32 +957,52 @@ rp.account.async: true          # 入账异步开关（故障时切同步）
 ### Redis 在线扩容
 
 ```
-普通红包集群：16分片 → 32分片
-  - 步骤：新增 16 个分片节点加入集群
-  - redis-cli --cluster reshard 在线迁移 slot
-  - 双写过渡：扩容期间同时写新旧分片，避免 LPOP 丢失
-  - 注意：扩容期间暂停热点红包功能，避免 slot 迁移时 List 不完整
+一、普通红包集群扩容：16分片 ➜ 32分片
+        ↓
+① 新增16个分片节点，并入原有Redis集群
+        ↓
+② 执行 redis-cli --cluster reshard 在线迁移slot槽位
+        ↓
+③ 扩容期间开启双写过渡
+   同时写入新旧分片，防止LPOP数据丢失
+        ↓
+④ 运维约束
+   扩容期间临时暂停热点红包，规避迁移中List数据不完整风险
 
-热点红包集群：独立实例，按活动规模弹性创建/销毁
-  - 预设模板（Kubernetes CRD），一键拉起独立集群
-  - 活动结束后自动销毁，节约成本
+————————————————————
+
+二、热点红包集群 弹性架构
+        ↓
+① 资源隔离：独立Redis集群，与普通红包物理隔离
+        ↓
+② 部署方式：基于Kubernetes CRD预设集群模板
+        ↓
+③ 运营周期
+   活动前：按流量规模一键拉起独立集群
+   活动中：隔离大流量洪峰，不影响普通红包
+   活动后：自动销毁集群，释放资源、节约成本
 ```
 
 ### DB 分库分表扩容
 
 ```
-当前：8库256表（红包主表）
-目标：16库256表（扩容）
+【方案：一致性哈希 + 双写迁移】 当前：8库256表（红包主表）；目标：16库256表（扩容）
 
-方案：一致性哈希 + 双写迁移
-1. 新建 16库 集群
-2. 双写模式：写入同时写 8库 和 16库
-3. 后台迁移历史数据（hash 取模重分配）
-4. 迁移完成后，切换路由到 16库，关闭双写
-5. 旧 8库 只读保留 7 天，无问题后下线
-
-关键：路由层用一致性哈希，扩容时仅迁移相邻 slot，
-      减少数据迁移量，迁移期间不停服
+① 新建目标集群：16库256表
+          ↓
+② 开启双写模式
+   业务写入同时落地：旧8库 + 新16库
+          ↓
+③ 后台异步迁移历史数据
+   基于一致性哈希重新计算分片，重分配数据
+          ↓
+④ 全量数据迁移完成
+          ↓
+⑤ 路由层切换至 16库 新集群，关闭双写
+          ↓
+⑥ 旧8库集群改为只读，保留7天
+          ↓
+⑦ 观察无误后，下线旧8库集群
 ```
 
 ### 冷热分层存储
