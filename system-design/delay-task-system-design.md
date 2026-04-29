@@ -117,15 +117,100 @@
 
 ## 3. 领域模型 & 库表设计
 
-### 3.1 领域模型
+### 3.1 核心领域模型（实体 + 状态机 + 事件 + 视图）
 
-| 聚合分类 | 领域模型 | 对应库表 | 核心属性 | 核心行为 |
-|----------|----------|----------|----------|----------|
-| 任务聚合（核心） | 任务（Task） | task_main | 任务ID、租户ID、业务类型、业务ID、触发时间、状态、任务负载、重试次数、乐观锁版本号 | 创建/取消/修改/触发/重试 |
-| | 执行流水（TaskExecLog） | task_exec_log | 任务ID、执行时间、执行结果、耗时(ms)、错误信息 | 记录每次触发尝试 |
-| | 死信（DeadLetter） | task_dead_letter | 任务ID、最后错误信息、重试次数、最终失败时间 | 人工介入重投 |
-| 租户聚合 | 租户配额（TenantQuota） | tenant_quota | 租户ID、写入QPS上限、触发QPS上限、在途任务数上限 | 令牌桶限流、配额校验 |
-| 运维聚合 | 对账快照（ReconcileSnapshot） | reconcile_snapshot | 快照日期、总提交数、总触发数、总取消数、总死信数、差异数 | 日级对账 |
+> 说明：延时任务系统是典型的"写入削峰 + 冷热分层调度 + 异步回调"场景——写入链路只写 Kafka + Redis meta 即返回，调度链路由分桶 owner 独占扫描时间轮触发，触发链路通过 Kafka 解耦回调投递。因此不按 DDD 聚合组织（Task/ExecLog/DeadLetter 不在同一事务边界内），而是按"实体（Entity）/ 事件（Event）/ 辅助实体（Auxiliary）/ 运维视图（Read Model）"四类梳理，更贴近真实架构职责。
+
+#### ① 实体（Entity，核心写模型）
+
+| 模型 | 职责 | 核心属性 | 状态机 | 存储位置 |
+|------|------|---------|--------|---------|
+| **Task** 延时任务 | 任务生命周期：提交→加载→触发→确认/取消/死信 | 任务ID、租户ID、业务类型、业务ID、触发时间、回调地址、任务负载、重试次数、乐观锁版本号 | `PENDING→LOADED→TRIGGERED→ACKED` / `→CANCELED` / `→DEAD`（单向不可逆） | MySQL `task_main` 为权威源 + Redis ZSet（调度加速）+ 本地时间轮（触发执行） |
+
+> 只有这一个核心实体。状态机是系统的灵魂——每个状态转换对应一个明确的链路负责人：PENDING→LOADED（Loader）、LOADED→TRIGGERED（Scheduler）、TRIGGERED→ACKED（Dispatcher）。
+
+#### ② 事件（Event，Kafka 事件流，不可变）
+
+| 模型 | 职责 | 核心属性 | 触发时机 | 对应 Topic | 下游消费 |
+|------|------|---------|---------|-----------|---------|
+| **TaskSubmitted** 提交事件 | 业务方提交任务，作为写入削峰的入口 | task_id、tenant_id、biz_type、biz_id、trigger_time、callback、payload | API Service 接收请求后异步发送 | `task_submit`（64分区） | Loader：写 Redis meta + 写 DB + 写 Redis ZSet |
+| **TaskDispatched** 触发投递事件 | 时间轮到期后投递给 Dispatcher 执行回调 | task_id、trigger_time、owner_epoch、payload | Scheduler 时间轮 onFire + WAL 落盘后 | `trigger_dispatch`（128分区） | Dispatcher：执行 HTTP/RPC/MQ 回调 |
+| **TaskRetried** 重试事件 | 回调失败后进入梯度重试队列 | task_id、retry_cnt、next_retry_time、last_error | Dispatcher 回调失败时 | `trigger_retry`（32分区） | Dispatcher：延迟后重新投递（1s/5s/30s/5m/1h） |
+| **TaskDead** 死信事件 | 重试耗尽，进入死信托管 | task_id、tenant_id、biz_type、biz_id、last_error、retry_cnt | 第 N 次重试仍失败（N=max_retry） | `trigger_dead_letter`（8分区） | 告警服务 + 人工介入 |
+
+> 事件是**追加写、不可变的事实记录**，通过 Kafka 解耦写入/调度/触发三条链路。同一 task_id 的所有事件路由到同一分区（key=task_id），保证有序性——避免"取消消息比触发消息先到达"的 ABA 问题。
+
+#### ③ 辅助实体（Auxiliary，非核心写路径，异步产生）
+
+| 模型 | 职责 | 核心属性 | 生成方式 | 存储位置 |
+|------|------|---------|---------|---------|
+| **TaskExecLog** 执行流水 | 记录每次触发尝试的结果，用于问题排查和延迟分析 | task_id、执行时间、期望触发时间、结果（成功/失败/取消/重试）、耗时ms、错误信息 | Dispatcher 回调完成后异步写入 | MySQL `task_exec_log`（保留30天） |
+| **DeadLetter** 死信 | 重试耗尽的任务归档，支持人工介入重投 | task_id、tenant_id、biz_type、biz_id、payload、last_error、retry_cnt、最终失败时间 | Dispatcher 消费 TaskDead 事件后写入 | MySQL `task_dead_letter` |
+| **TenantQuota** 租户配额 | 多租户隔离的配额配置，运行时全缓存 | 租户ID、写入QPS上限、触发QPS上限、在途任务数上限、优先级 | 运营配置写入，全量缓存到内存 | MySQL `tenant_quota`（小表） |
+
+> 辅助实体与 Task 主体**不在同一事务边界内**：ExecLog 是 Dispatcher 异步写的，DeadLetter 是重试链路末端写的，TenantQuota 是配置表。它们不构成 DDD 意义上的"聚合"。
+
+#### ④ 运维视图（Read Model，只读，对账/监控用）
+
+| 模型 | 职责 | 核心属性 | 生成方式 | 一致性要求 |
+|------|------|---------|---------|-----------|
+| **ReconcileSnapshot** 对账快照 | 日级对账：提交数 - 触发数 - 取消数 - 死信数 = 0 | 快照日期、租户ID、总提交数、总触发数、总取消数、总死信数、差异数 | 每日凌晨对账脚本扫描 DB 生成 | 最终一致（T+1 出结果） |
+
+> `ReconcileSnapshot` 是从 Task 表聚合出的对账产物，完全可以从源数据重建，这是读模型的核心特征。差异数 > 0 时触发 P0 告警（丢任务 = 资损）。
+
+#### 模型关系图（数据流转）
+
+```
+  [写入链路]                    [调度链路]                    [触发链路]
+┌──────────────┐                                    ┌──────────────────┐
+│  Task        │                                    │  TaskExecLog     │
+│  (DB 权威源)  │                                    │  (执行流水)       │
+└──────┬───────┘                                    └──────────────────┘
+       │                                                     ↑
+       │  API 提交     ┌────────────────┐                     │
+       └────────→     │ TaskSubmitted  │                     │
+                      │ (task_submit)  │                     │
+                      └───────┬────────┘                     │
+                              │ Loader 消费                   │
+                              ↓                              │
+                      ┌────────────────┐                     │
+                      │ Redis ZSet     │                     │
+                      │ (冷热搬迁)      │                     │
+                      └───────┬────────┘                     │
+                              │ Scheduler 时间轮              │
+                              ↓                              │
+                      ┌────────────────┐                     │
+                      │ TaskDispatched │──Kafka──→ Dispatcher
+                      │(trigger_dispatch)│           │       │
+                      └────────────────┘             │       │
+                                                     ↓       │
+                                                 回调业务方 ───┘
+                                                     │
+                                                 失败 ↓
+                      ┌────────────────┐     ┌────────────────┐
+                      │  TaskDead      │ ←── │  TaskRetried   │ (N次耗尽)
+                      │(dead_letter)   │     │(trigger_retry) │
+                      └───────┬────────┘     └────────────────┘
+                              │
+                              ↓
+                      ┌────────────────┐
+                      │  DeadLetter    │
+                      │  (死信表)       │──→ 人工介入重投
+                      └────────────────┘
+
+  取消流程（独立于主链路）：
+  cancel(task_id) → Redis 墓碑 SET delay:cancel:{task_id} + DB status=CANCELED
+                  → Scheduler 触发前校验墓碑 → 命中则丢弃
+                  → Dispatcher 消费前二次校验 → 命中则丢弃
+```
+
+#### 设计原则
+
+- **写入链路极致轻量**：API 只写 Kafka + Redis meta 即返回（< 50ms），不阻塞触发链路
+- **DB 是唯一权威源**：Redis/时间轮/Kafka 都是加速层，丢失可从 DB 重建
+- **状态机单向不可逆**：PENDING→LOADED→TRIGGERED→ACKED，任何逆向操作都是"墓碑+新建"而非原地修改
+- **事件流是系统骨架**：四个 Kafka Topic 对应四个关键事件，串联写入/调度/触发三条链路
+- **辅助实体与主体解耦**：ExecLog/DeadLetter/TenantQuota 不与 Task 共享事务，出错不影响触发可用性
 
 ### 3.2 数据库表设计
 
