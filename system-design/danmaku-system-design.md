@@ -9,7 +9,7 @@
 |---|------|------|---------|
 | 1 | **点播 vs 直播模型** | 点播用"拉"（按时间窗口 ZSet），直播用"推"（房间内广播） | 点播弹幕总量固定且可缓存（CDN 友好）；直播时效 < 1s 必须推，拉模型延迟不可接受 |
 | 2 | **点播弹幕分桶** | 按 `video_id + 每30秒一个时间桶`作为 Redis ZSet key | 热门视频单视频1亿条弹幕若单 Key 存储会打爆单分片；30s 桶对齐播放缓冲窗口，客户端每次只拉未来30s |
-| 3 | **直播房间分片** | 单房间 WS长链接服务 副本 = ⌈在线数/5万⌉，副本间 Pub/Sub | 单 Go WS长链接服务 进程稳定承载5万长连接（epoll + goroutine 池），副本内直接内存广播零网络开销 |
+| 3 | **直播房间分片** | 单房间 WS长链接服务 副本 = ⌈在线数/5万⌉，副本间 RocketMQ 集群消费 + Job 路由层分发 | 单 Go WS长链接服务 进程稳定承载5万长连接（epoll + goroutine 池），副本内直接内存广播零网络开销；跨副本通过 Job 路由层查全局路由表精准推送，具备持久化和背压能力 |
 | 4 | **弹幕洪水抽样** | 发送 QPS > 房间阈值（默认1000条/s）后启用智能抽样，客户端接收上限 200条/s | 用户视觉极限 ≈ 每秒屏幕可阅读20~30条，超出纯浪费带宽；抽样按"VIP+高互动权重"保留，不丢失重要内容 |
 | 5 | **审核架构** | 关键词同步拦截（<5ms） + AI 异步审核（先发后审，命中下架） | 关键词拦截覆盖95%违规（赌博/政治/广告），AI 审核耗时 100-300ms 不阻塞推送；违规通过 `danmu_tombstone` Set 实时下架 |
 | 6 | **弹幕落盘异步** | 推送链路仅写 Redis，MQ 异步批量落 MySQL（100条/批或500ms） | 直播发送 200万 QPS 若同步落 DB 即刻击穿；异步合并写 MySQL TPS 从 200万/s 降至 2万/s 可控（落盘的是原始发送量，非扇出量）|
@@ -149,9 +149,13 @@
 - 合计热点数据 ≈ **730 GB**，叠加主从复制 + 碎片 + 扩容余量 ×4 ≈ **3 TB** ✓
 
 **MQ 容量：**
-- 峰值消息写入：直播发送 200万 + 点播发送 50万 + 扇出任务 5万（每房间一个扇出任务，WS长链接服务 内部扩散）+ 审核 250万 + 计数 250万 ≈ **750万条/s**
-- 消息保留 3天 = 750万 × 86400 × 3 × 400B ≈ **770 TB** → 实际落 MQ 仅"业务消息"（发送+审核+落盘），扇出走 Redis Pub/Sub 不入 MQ，真实 MQ 入量 ≈ 500万条/s × 400B ≈ 2 GB/s × 3天 = **520 TB**
-- 规划：**RocketMQ 16 主 16 从**，单 Broker 32 分区，单盘 SSD 2TB × 16 ≈ 32 TB × 16 副本冗余 ≈ 512 TB ✓
+- 峰值消息写入：直播广播 200万 + 点播发送 50万 + 审核 250万 + 落盘 250万 + 计数 250万 ≈ **1000万条/s**
+- 其中 `topic_danmu_live_broadcast` 峰值 200万条/s（独立 Broker 组承载），该 Topic 消息保留 1 小时（实时广播无需长保留）
+- 业务 Topic（落盘+审核+计数）≈ 550万条/s，消息保留 3天 = 550万 × 86400 × 3 × 400B ≈ **570 TB**
+- 广播 Topic 1小时保留 = 200万 × 3600 × 300B ≈ **2 TB**（极轻量）
+- 广播 Topic Broker 规划：**8 主 8 从**专用，每 Broker 承载 256/8 = 32 Partition = 25万条/s × 300B = 75 MB/s 写入（异步刷盘单 Broker 极限 ~40万条/s，冗余系数 0.6 ✓）
+- 业务 Topic Broker 规划：**16 主 16 从**，跨 AZ 部署
+- 合计：**RocketMQ 24 主 24 从**，广播 Topic 采用**异步刷盘**（丢失 ≤ 1s 消息可接受，推送链路本身允许少量丢失+客户端有断线重连兜底）；业务 Topic 采用同步刷盘保证不丢
 
 ### 2.4 服务机器规划
 
@@ -162,11 +166,11 @@
 | 弹幕发送服务 | 3000 QPS | 50万+200万=250万 | **1200 台** | 含审核/去重/落 Redis，冗余系数0.7 |
 | 点播拉取服务 | 5000 QPS | 800万 | **2300 台** | 读缓存+打包压缩+CDN 回源，80% 走 CDN 后实际回源 160万 |
 | 直播 WS长链接服务 | 5万长连接/节点 | 500万峰值在线 | **150 台** + 50 台热备 | epoll + goroutine 池，每连接 32KB 内存预算 |
-| 扇出 Worker | 2万条/s | 3亿条/秒 | **—** | 由 WS长链接服务 副本内存广播完成，不需独立 Worker |
+| **Job 路由层** | 10万条/s 消费+分发 | 200万条/s 广播消息 | **32 台** | 8核16G，集群消费模式每实例消费部分 Partition + 查全局路由表 gRPC 流式推送到所有相关 Gateway；无状态可水平扩展 |
 | 审核服务 | 1000 QPS（AI） + 2万（关键词） | 250万 | **关键词 180台 + AI 300台** | 关键词本地 AC 自动机，AI 调用算法服务 |
 | 落盘 Worker | 10万条/s（批量） | 250万条/s | **40 台** | 100条/批+500ms 合并，批量 INSERT |
 | Redis Cluster | 10万 QPS/分片 | 800万读 + 500万写 ≈ 1300万 | **128 分片 × 1主2从 = 384 实例** | 冗余 0.7，单分片实际承载不超 7万 |
-| RocketMQ Broker | 20万条/s/节点 | 500万条/s | **16 主 16 从** | 跨 AZ 部署，异步刷盘 |
+| RocketMQ Broker | 20万条/s/节点 | 1000万条/s | **24 主 24 从**（8 主专用广播 Topic + 16 主业务 Topic） | 广播 Topic 异步刷盘（低延迟）；业务 Topic 同步刷盘（不丢消息） |
 | MySQL（弹幕热库） | 写 3000 TPS/主 | 30万 TPS（批量后） | **32库（4主8从 per 库，按实际用16主共享）** | 按 video_id % 256 分表 |
 | TiKV | 写 5万/节点 | 30万 | **12 节点 + 3 PD** | 冷存+LSM 写吞吐 |
 
@@ -191,13 +195,13 @@
 
 | 模型 | 职责 | 核心属性 | 触发时机 | 下游消费 |
 |------|------|---------|---------|---------|
-| **DanmuSent** 弹幕发送事件 | 一条弹幕发送成功后的事件 | 弹幕ID、目标ID（视频/房间）、发送用户ID、弹幕内容、时间戳 | Redis ZSet 写入成功 + 关键词审核通过 | ① **MQ 异步落盘**（MySQL/TiKV 批量写）② AI 审核服务 ③ 计数视图更新 ④ 直播场景额外：房间 PubSub 广播 |
+| **DanmuSent** 弹幕发送事件 | 一条弹幕发送成功后的事件 | 弹幕ID、目标ID（视频/房间）、发送用户ID、弹幕内容、时间戳 | Redis ZSet 写入成功 + 关键词审核通过 | ① **MQ 异步落盘**（MySQL/TiKV 批量写）② AI 审核服务 ③ 计数视图更新 ④ 直播场景额外：RocketMQ 广播 Topic → Job 路由层 → WS长链接服务 扇出 |
 | **DanmuReviewed** 审核结果事件 | AI 审核完成回调 | 弹幕ID、审核结果（通过/拒绝）、置信度、拒绝原因 | AI 审核服务处理完毕 | ① 更新 Danmu.status ② 违规则触发 `DanmuTakedown` 并写入墓碑 Set ③ 审核日志落盘 |
-| **DanmuTakedown** 弹幕下架事件 | 违规弹幕被下架 | 弹幕ID、目标ID（视频/房间）、下架原因 | 审核判定违规或用户举报被确认 | ① Redis 墓碑 Set 写入 ② **直播场景 PubSub 广播删除指令**（WS长链接服务 实时隐藏）③ 点播下次拉取客户端差集过滤 |
+| **DanmuTakedown** 弹幕下架事件 | 违规弹幕被下架 | 弹幕ID、目标ID（视频/房间）、下架原因 | 审核判定违规或用户举报被确认 | ① Redis 墓碑 Set 写入 ② **直播场景 RocketMQ 广播 Topic 投递删除指令 → Job 路由层分发**（WS长链接服务 实时隐藏）③ 点播下次拉取客户端差集过滤 |
 | **UserMuted** 用户禁言事件 | 主播/房管禁言某用户 | 房间ID、被禁言用户ID、操作人ID、到期时间戳、禁言原因 | 禁言操作成功 | ① 写入 `user_mute` ② Redis 禁言缓存 ③ WS长链接服务 踢出对应用户的连接 |
 
 > 关键认知：
-> - `DanmuTakedown` 是对用户体验最关键的一个事件——违规弹幕必须 1s 内从所有客户端消失，事件驱动的墓碑 Set + PubSub 广播是核心机制
+> - `DanmuTakedown` 是对用户体验最关键的一个事件——违规弹幕必须 1s 内从所有客户端消失，事件驱动的墓碑 Set + RocketMQ 广播 Topic 删除指令是核心机制
 > - `DanmuSent` 是"写路径"和"落盘/扇出/审核"三个下游的解耦点，直播场景下发送速率极高（200万 QPS），事件驱动架构是规模必然要求
 
 #### 3.1.3 ③ 读模型 / 物化视图（Read Model，查询侧）
@@ -230,11 +234,11 @@
   └──────┬───────┘               │                           └──────────────────────┘
          │                       ├──→ 计数服务 ───────────→   ┌──────────────────────┐
          │                       │                           │  DanmuCounter        │ ← 计数视图
-         │                       └──→ 直播 PubSub 广播 ─────→│  LiveRecentWindow    │ ← 直播窗口
+         │                       └──→ 直播 MQ广播→Job路由层 ─→│  LiveRecentWindow    │ ← 直播窗口
          │                                                   └──────────────────────┘
          ↓
   ┌──────────────┐──UserMuted────→ WS长链接服务 踢出连接
-  │    Room      │──DanmuTakedown→ TombstoneSet + PubSub 广播删除指令
+  │    Room      │──DanmuTakedown→ TombstoneSet + MQ广播删除指令→Job路由层分发
   │ (Redis+MySQL)│
   └──────────────┘
 
@@ -383,6 +387,7 @@ flowchart TD
       SVC_AUDIT_AI["AI审核服务"]
       SVC_COUNT["计数服务"]
       SVC_WORKER["落盘Worker"]
+      JOB_ROUTER["Job 路由层\n(集群消费+gRPC分发)"]
     end
 
     subgraph 中间件层
@@ -392,8 +397,7 @@ flowchart TD
         R_RATE["发送频控\nuser_id"]
         R_TOMB["墓碑Set\nvideo/room级"]
       end
-      MQ["RocketMQ 16主16从\nsend/audit/persist/count/dlq"]
-      PUBSUB["房间PubSub\n(跨WS长链接服务副本)"]
+      MQ["RocketMQ 24主24从\nsend/audit/persist/count/broadcast/dlq"]
       ETCD["ETCD 配置中心\n限流/降级/开关"]
     end
 
@@ -436,7 +440,8 @@ flowchart TD
     SVC_PULL --> CDN
     SVC_PULL --> R_TOMB
 
-    GW_WS <-.广播.-> PUBSUB
+    MQ --> JOB_ROUTER
+    JOB_ROUTER <-.gRPC推送.-> GW_WS
     SVC_ROOM --> R_RATE
     SVC_ROOM --> ETCD
 
@@ -449,7 +454,7 @@ flowchart TD
 
 1. **点播拉 / 直播推，两条链路物理隔离**：避免大型直播的长连接风暴冲击点播缓存
 2. **WS长链接服务 层无业务逻辑**：仅做协议解码、鉴权、路由、房间内广播，内存占用线性可预期
-3. **发送链路不阻塞推送链路**：发送服务写入 Redis 后立即 Pub/Sub 扇出，MQ + MySQL 落盘异步
+3. **发送链路不阻塞推送链路**：发送服务写入 Redis 后立即投递 RocketMQ 广播 Topic，Job 路由层分发至相关 WS长链接服务 节点；MQ + MySQL 落盘异步
 4. **审核双通道**：关键词同步（命中直接拒绝）+ AI 异步（命中后墓碑下架），兼顾体验与安全
 5. **冷热分层**：热 Redis、温 MySQL、冷 TiKV、归档 OSS，单条弹幕一辈子走完四层
 
@@ -560,13 +565,26 @@ flowchart TD
    3.Redis ZADD 写入直播间弹幕 ZSet
      同时 ZREMRANGEBYSCORE 清理超过30分钟过期历史数据
      ↓
-   4.Redis PUBLISH 发布房间频道消息：room_channel:{room_id}
+   4.投递 RocketMQ topic_danmu_live_broadcast（房间实时广播 Topic）
+     消息 Key = room_id（用于消费端过滤），Partition 选择 = hash(danmu_id) % 256
+     （同一大房间的消息分散在多个 Partition，避免热点集中在单 Job）
      ↓
    5.异步投递MQ：直播弹幕：持久化topic + AI审核topic
         ↓
-④ WS长连接服务 订阅&扇出推送
+④ Job 路由层消费 & 分发
      ↓
-   1.每个WS长连接服务只订阅本机有在线连接的房间频道
+   1.Job 路由层以集群消费模式（Clustering）消费 topic_danmu_live_broadcast
+     每条消息只被一个 Job 实例消费（按 Partition 分配），无读放大
+     ↓
+   2.根据内存路由表 routeTable[room_id] → [gateway_addr_list]
+     确定该消息需要推送到哪些 WS长链接服务 节点
+     ↓
+   3.通过 gRPC 双向流将消息推送到目标 WS长链接服务 节点
+     （Job 与每个 Gateway 之间维持长连接，复用流式推送）
+        ↓
+⑤ WS长连接服务 接收 & 房间内广播
+     ↓
+   1.从 gRPC stream 接收 Job 路由层推送的消息
      ↓
    2.遍历本机 RoomRegistry[room_id] 所有长连接
      内存直写WS消息，完成房间内扇出广播
@@ -576,18 +594,50 @@ flowchart TD
       - 重复内容合并聚合展示
       - 优先级队列：礼物/上舰/VIP > 普通弹幕 > 抽样降级内容
         ↓
-⑤ 客户端接收渲染
+⑥ 客户端接收渲染
    按 server_ts 时序排队，渲染器每帧限流推入，最高300条/s 防止画面卡顿
 ```
 
 **房间副本机制：**
 - 单房间单 WS长链接服务 节点最多 5 万连接，超过自动触发"副本扩展"
 - 用一致性哈希 `hash(room_id + replica_idx) → WS长链接服务 节点`，`replica_idx` 随上线人数增长
-- 例如顶级房间 500 万人 = 100 个副本，副本之间通过 Redis PubSub 接收广播
+- 例如顶级房间 500 万人 = 100 个副本，副本之间通过 Job 路由层按路由表分发消息（Job 知道每个副本的地址，精准推送）
+
+**Job 路由层设计（参考 B 站 goim / 字节直播架构）：**
+
+核心原则：**统一集群消费（Clustering），每条消息只被一个 Job 消费一次，由该 Job 查全局路由表分发到所有相关 Gateway。** 无读放大、无模式切换、无状态可水平扩展。
+
+**消费模型：**
+- `topic_danmu_live_broadcast` 共 256 Partition，32 个 Job 实例组成同一个 Consumer Group（集群消费）
+- RocketMQ Rebalance 将 256 Partition 均匀分配给 32 实例，每实例消费 8 个 Partition
+- 每条消息只被一个 Job 实例消费（无读放大），消费后查路由表推送到 **所有** 持有该房间连接的 Gateway 节点
+- 大房间（如500万人/100 Gateway 副本）：一条消息被 1 个 Job 消费后，推送给 100 个 Gateway = **写放大100倍发生在 Job→Gateway 的 gRPC 链路上**（而非 MQ 侧），gRPC 流式推送带宽可控
+
+**高可用设计：**
+- **无状态**：Job 本身不持有业务状态，路由表由 Gateway 上报构建，任何 Job 实例挂掉后 RocketMQ 自动 Rebalance 将其 Partition 分配给存活实例（~20s 恢复）
+- **路由表一致性**：每个 Job 实例维护**全局完整**路由表（所有房间→所有 Gateway 的映射），通过 Gateway 上报 + 30s 心跳全量校对保证一致；路由表总大小 = 百万房间 × 平均 3 Gateway 地址 × 100B ≈ 300 MB，单实例可承载
+- **脑裂检测**：Job 实例每 10s 向注册中心（ETCD）上报自身消费的 Partition 列表 + 路由表 version；监控系统比对各实例路由表 version 差异，超过 2 个版本触发全量同步
+- **部分故障影响面**：32 实例挂 5 个 → 这 5 个实例负责的 Partition（约 40 个）上的消息暂停推送 ~20s（Rebalance 时间），其他 Partition 不受影响；影响面 = 40/256 ≈ 15% 的消息延迟 20s，非全局中断
+
+**延迟 SLA 分解：**
+```
+发送服务投递 MQ:       ≈ 3ms（异步刷盘，本地 PageCache 写入即返回）
+MQ → Job 消费延迟:    ≈ 5ms（长轮询拉取，批量32条，P99 < 10ms）
+Job 路由表查询:        < 0.1ms（内存 HashMap）
+Job → Gateway gRPC:   ≈ 2ms（同机房 gRPC stream write，复用连接）
+Gateway 内存广播:      ≈ 5ms（遍历连接 + 序列化一次复用）
+───────────────────────────────────────
+端到端 P99:           ≈ 15~30ms（远低于 1s SLA）
+```
+
+**路由表维护：**
+- WS长链接服务 节点在用户进房/离房时，通过 gRPC 向 Job 路由层上报 `(room_id, gateway_addr, +/-)` 变更
+- Job 路由层内存维护 `routeTable: room_id → Set<gateway_addr>`
+- 路由表变更以增量方式同步，全量兜底每 30s 心跳校对
 
 ```go
-// WS长链接服务 广播核心伪代码
-func (g *Gateway) onPubSub(roomID int64, msg *DanmuMsg) {
+// WS长链接服务 广播核心伪代码（从 gRPC stream 接收 Job 路由层推送）
+func (g *Gateway) onJobPush(roomID int64, msg *DanmuMsg) {
     conns := g.registry.Get(roomID)      // 本节点该房间的连接列表
     if !g.rateLimiter.AllowRoom(roomID, len(conns)) {
         msg = g.sampler.Sample(msg, roomID) // 超阈值抽样
@@ -614,7 +664,8 @@ AI 审核 Worker:
 3. 若判定违规:
    3.1 UPDATE danmu SET status=2, audit_level=0 WHERE id=?
    3.2 Redis: SADD danmu:tombstone:{video_or_room_id} {danmu_id}, EXPIRE 24h
-   3.3 直播场景额外: PUBLISH room_channel:{room_id} {type:"delete", id:danmu_id}
+   3.3 直播场景额外: 投递 RocketMQ topic_danmu_live_broadcast {type:"delete", id:danmu_id}
+       Job 路由层消费后按路由表推送删除指令到所有相关 WS长链接服务 节点
        WS长链接服务 收到后向房间内连接广播删除指令, 客户端立即隐藏
    3.4 点播场景: 依赖客户端下次拉取时的墓碑差集(可接受30s延迟)
 4. 命中严重违规的用户联动禁言: 写 user_mute
@@ -642,9 +693,9 @@ AI 审核 Worker:
 - **不一致窗口**：新发弹幕 → CDN 缓存刷新 < 1min（通过客户端直拉 Redis 旁路确保新发者自己立即可见）
 
 **直播场景：**
-- 推送即"最终一致的起点"：Redis ZADD 成功即广播
+- 推送即"最终一致的起点"：Redis ZADD 成功即投递广播 Topic
 - 断连重连：客户端带上 `last_server_ts`，WS长链接服务 从 Redis ZSet 回放增量
-- 删除：PubSub 广播删除事件，WS长链接服务 级别广播到连接，实时隐藏
+- 删除：广播 Topic 投递删除事件 → Job 路由层分发 → WS长链接服务 级别广播到连接，实时隐藏
 
 ### 6.3 热点防护
 
@@ -666,13 +717,14 @@ AI 审核 Worker:
 
 ### 7.1 Topic 设计
 
-| Topic | 分区 | 用途 | 优先级 |
-|-------|------|------|-------|
-| `topic_danmu_send_persist_vod` | 64 | 点播弹幕落 MySQL | P1 |
-| `topic_danmu_send_persist_live` | 128 | 直播弹幕落 TiKV | P2（允许延迟） |
-| `topic_danmu_audit` | 32 | AI 审核 | P0（涉及违规） |
-| `topic_danmu_count` | 16 | 弹幕计数视图更新 | P3 |
-| `topic_danmu_dlq` | 8 | 死信 | — |
+| Topic | 分区 | 用途 | 优先级 | 消费模式 |
+|-------|------|------|-------|---------|
+| `topic_danmu_live_broadcast` | 256 | **直播弹幕实时广播**（发送服务 → Job 路由层 → WS长链接服务） | **P0**（延迟敏感） | 集群消费（每条消息只被一个 Job 消费，Job 查路由表分发） |
+| `topic_danmu_send_persist_vod` | 64 | 点播弹幕落 MySQL | P1 | 集群 |
+| `topic_danmu_send_persist_live` | 128 | 直播弹幕落 TiKV | P2（允许延迟） | 集群 |
+| `topic_danmu_audit` | 32 | AI 审核 | P0（涉及违规） | 集群 |
+| `topic_danmu_count` | 16 | 弹幕计数视图更新 | P3 | 集群 |
+| `topic_danmu_dlq` | 8 | 死信 | — | 集群 |
 
 ### 7.2 可靠性保障
 
@@ -692,7 +744,7 @@ AI 审核 Worker:
   1. 扩容消费者（Kubernetes HPA 基于堆积量）
   2. 暂停非核心（计数 Topic），优先消费审核与落盘
   3. 堆积持续 > 30 分钟，降级写入本地文件队列，后续离线合并
-- **扇出与 MQ 解耦**：直播扇出走 Redis PubSub 不走 MQ，避免堆积影响推送
+- **广播 Topic 与业务 Topic 物理隔离**：直播实时广播走独立 `topic_danmu_live_broadcast`（专用 Broker 组），与落盘/审核 Topic 物理隔离，避免落盘堆积影响推送链路延迟
 
 ---
 
@@ -710,11 +762,21 @@ AI 审核 Worker:
 ```
 头部房间 500 万在线, 峰值发送 20万条/s
 → WS长链接服务 副本 100 个, 每副本 5万连接
-→ 每副本接收 20万 PubSub/s (假设 Redis 广播均匀), 实际通过 Redis PubSub 每副本 20万/s
-→ 副本内抽样后保留 6万/s, 再给 5万连接各推送 6万 × 5万 = 30亿 write
-→ 每条弹幕 250B, 每副本出带宽 6万 × 5万 × 250B = 7.5 GB/s ←超限!
-→ 实际客户端接收速率限定 200条/s: 每副本 5万 × 200 × 250B = 2.5 GB/s ✓
+→ 20万条/s 写入 topic_danmu_live_broadcast，分散在 256 Partition
+→ 32 个 Job 实例集群消费，每实例消费 8 Partition ≈ 6.25万条/s
+→ 其中大房间消息集中在少数 Partition（同 room_id hash 到同一 Partition）
+   假设大房间 20万条/s 集中在 1 个 Partition → 该 Partition 所在 Job 实例处理 20万条/s
+   该 Job 查路由表后推送给 100 个 Gateway 副本 = gRPC 出流量 20万×250B×100 = 5 GB/s ← 超限!
+→ 解决：大房间消息发送时按 hash(danmu_id) % 8 分散到 8 个 Partition
+   每个 Partition 2.5万条/s → 最多 8 个 Job 各处理 2.5万/s → 各推送100副本 = 625 MB/s/Job ✓
+→ 副本内抽样后保留 200条/s 推送给每个连接
+→ 每条弹幕 250B, 每副本出带宽 5万 × 200 × 250B = 2.5 GB/s ✓
 → 100 副本 × 2.5 GB/s = 250 GB/s 外网出口 ≈ 2 Tbps (与前文闭合)
+
+Job 路由层负载（常态）：
+→ 全站 200万条/s / 32 Job = 6.25万条/s/实例
+→ 每实例平均推送 ~5 个 Gateway = 6.25万 × 250B × 5 = 78 MB/s ✓
+→ 大房间场景：8 个 Job 各 2.5万/s × 100 Gateway = 625 MB/s/Job（需升配到万兆网卡）
 ```
 
 ### 8.2 弹幕洪水抑制
@@ -801,7 +863,9 @@ AI 审核 Worker:
 | 故障 | 兜底方案 |
 |-----|---------|
 | Redis 全挂 | 点播切 DB 直读（仅允许前 5 分钟冷启动）；直播仅靠 WS长链接服务 内存广播（丢失历史回放） |
-| MQ 挂 | 发送服务写本地磁盘 WAL，恢复后补投 |
+| MQ 挂（广播 Topic） | 直播推送链路降级：发送服务直接 gRPC 推送到 Job 路由层（绕过 MQ），Job 层降级为纯转发模式；丢失持久化保障但保证推送不中断 |
+| MQ 挂（业务 Topic） | 发送服务写本地磁盘 WAL，恢复后补投 |
+| Job 路由层全挂 | 直播推送暂停，客户端降级为 HTTP 轮询拉取 Redis ZSet 最近 30s 弹幕（3s 一次） |
 | WS长链接服务 集群故障 | 直播链路降级为 HTTP 轮询（3s 一次） |
 | 审核服务全挂 | 关键词继续，AI 跳过，事后批量审核 |
 | CDN 全挂 | 拉取服务直接返回，承压系数 ×5 |
@@ -812,7 +876,7 @@ AI 审核 Worker:
 
 ### 10.1 WS长链接服务 水平扩展
 - 无状态设计，K8s HPA 基于连接数（80% 水位扩容）
-- 新节点启动时从注册中心拉取分配的房间列表，开始 SUBSCRIBE
+- 新节点启动时向 Job 路由层注册自身地址，Job 路由表自动纳入该节点；用户进房时上报 `(room_id, gateway_addr)` 更新路由表
 - 扩容过程：一致性哈希 + 虚拟节点，影响面控制在 1/N
 
 ### 10.2 Redis 在线扩容
@@ -839,6 +903,12 @@ AI 审核 Worker:
 ### 10.5 MQ 弹性
 - RocketMQ 按 Topic 分区扩容，扩完触发消费者 Rebalance
 - 大型赛事前预扩 2 倍分区，观察消费速率
+- `topic_danmu_live_broadcast` 预扩容策略：赛事前按预估峰值房间数 × 2 扩 Partition，确保大房间消息分散
+
+### 10.6 Job 路由层弹性
+- 无状态设计（路由表由 Gateway 上报动态构建），K8s HPA 基于消费 Lag 扩容
+- 新 Job 实例启动后自动加入消费者组，RocketMQ Rebalance 分配 Partition
+- 路由表冷启动：新实例启动时广播"路由查询"请求，所有 Gateway 上报当前房间映射，30s 内完成路由表构建
 
 ---
 
@@ -847,7 +917,7 @@ AI 审核 Worker:
 ### 11.1 高可用容灾
 
 - **多机房**：3 IDC 同城三活 + 异地灾备
-- **直播链路**：WS长链接服务 跨机房，DNS 智能解析就近接入；Redis PubSub 跨机房单向复制，故障切换丢失 < 3s 消息可接受
+- **直播链路**：WS长链接服务 跨机房，DNS 智能解析就近接入；广播 Topic 异步刷盘（低延迟优先，Broker 宕机丢失 ≤ 1s 消息可接受，客户端断连重连机制兜底）；业务 Topic 同步刷盘不丢；Job 路由层多机房部署，无状态可随时切换
 - **点播链路**：完全无状态，任一机房可独立服务
 - **数据**：MySQL 跨机房半同步，TiKV Raft 三副本
 
@@ -857,6 +927,7 @@ AI 审核 Worker:
 |----|------|---------|
 | 流量 | 发送 QPS、拉取 QPS、WS长链接服务 连接数 | 超 80% 容量 P1 |
 | 性能 | 推送端到端延迟 P99、拉取 P99、审核延迟 | 推送 > 1.5s P0 |
+| Job 路由层 | 路由表大小、gRPC 推送延迟 P99、广播 Topic 消费 Lag | Lag > 1万条 P0，推送延迟 > 100ms P1 |
 | 客户端 | 弹幕渲染掉帧率、发送成功率 | 掉帧 > 20% P1 |
 | 一致性 | 墓碑 Set 扩散延迟、落盘延迟 | 落盘堆积 > 5min P1 |
 | 资源 | Redis CPU/QPS、WS长链接服务 goroutine、MQ 堆积 | CPU > 80% P1 |
@@ -885,27 +956,54 @@ AI 审核 Worker:
 
 # 12. 面试高频10问
 
-### Q1：你说单房间 500 万在线通过 WS长链接服务 分副本广播，副本之间用 Redis PubSub 同步。那 Redis PubSub 单频道吞吐上限是多少？如果达到上限怎么办？你如何验证这个容量够用？
+### Q1：你说单房间 500 万在线通过 WS长链接服务 分副本广播，副本之间用 RocketMQ + Job 路由层分发。Job 路由层是集群消费，一条消息只被一个 Job 处理，那这个 Job 要推送给 100 个 Gateway 副本，它不会成为新的瓶颈吗？
 
-**参考答案：核心思路是"单频道吞吐有物理上限，必须通过频道分片+节点级去重解决"。**
+**参考答案：核心思路是"集群消费无读放大 + 大房间消息 Partition 分散 + Job 无状态水平扩展"。**
 
 :::warning
-① Redis 单 PubSub 频道的吞吐受限于订阅端消费速度，单主节点 PubSub 推送极限约 20~30 万条/s（6 核 CPU 打满），超过会导致订阅端缓冲区堆积、主节点输出 buffer 膨胀、最终踢掉慢消费者。
+① 为什么用 RocketMQ 集群消费替代 Redis PubSub：
+- Redis PubSub 致命问题：单线程扇出、无持久化（订阅者离线就丢消息）、无背压（慢消费者被踢）
+- 集群消费（Clustering）：每条消息只被一个 Job 消费，**MQ 侧零读放大**；写放大发生在 Job→Gateway 的 gRPC 链路上，这是可控的
+- 业界标杆：B 站 goim（Kafka + Job + Comet）、字节自研 BMQ、腾讯 TubeMQ 均采用类似架构
 
-② 验证方法：单房间 20万弹幕/s × 100 副本 WS长链接服务 订阅 = 主节点需要 20万 × 100 = 2000万条/s PubSub 出流量，远超单节点上限。
+② 大房间为什么不会压垮单个 Job：
+- 消息发送时 Key = `room_id`，但 Partition 选择用 `hash(danmu_id) % 256`（非 room_id hash）
+- **同一个大房间的 20万条/s 消息分散在多个 Partition 上**，被多个 Job 实例并行消费
+- 每个 Job 只处理该房间的一部分消息（20万/8≈2.5万条/s），查路由表后推送给所有 100 个 Gateway
+- gRPC 出流量 = 2.5万 × 250B × 100 = 625 MB/s/Job，万兆网卡可承载 ✓
 
-③ 解决方案（生产实际做法）：
-- **频道分片**：`room_channel:{room_id}:{shard}`，shard = replica_idx % 8，发送端对每个 shard 写入，每个 WS长链接服务 副本只订阅自己 shard 的频道；20万/s × 8 shard = 每 shard 2.5万/s 可控
-- **节点级本地 FanOut**：WS长链接服务 节点订阅后单线程接收、再交由节点内 goroutine 池分发到连接，避免 Redis 直接对接连接
-- **高级方案**：直接用自研 Pulsar-like 发布订阅组件，或 Kafka 多消费者组模型替代 PubSub
-
-④ 容量闭环验证：
+③ 低延迟保证：
 ```
-20万条/s × 每条 250B = 50 MB/s 单房间发送带宽
-100 WS长链接服务 副本 × 5万连接 = 500万在线 ✓
-8 shard × 2.5万/s × 副本侧 5万连接 × 0.3抽样 × 250B = 每副本 2.8 GB/s 出带宽
+发送服务投递 MQ:       ≈ 3ms（异步刷盘）
+MQ → Job 消费:        ≈ 5ms（长轮询，批量32条）
+Job 路由表查询:        < 0.1ms（内存 HashMap）
+Job → Gateway gRPC:   ≈ 2ms（流式推送，复用连接）
+Gateway 内存广播:      ≈ 5ms
+端到端 P99:           ≈ 15~30ms（远低于 1s SLA）
 ```
-这个数字和前文容量评估闭合。
+
+④ Job 高可用（无状态设计）：
+- Job 挂了：RocketMQ 自动 Rebalance（~20s），将该实例的 Partition 分配给存活实例
+- 影响面：挂 5/32 实例 → 15% 消息延迟 20s，非全局中断
+- 路由表：每个 Job 维护**全局完整**路由表（Gateway 上报构建 + 30s 心跳校对），任何 Job 可处理任何房间的消息
+- 脑裂检测：Job 每 10s 向 ETCD 上报路由表 version，version 差异 > 2 触发全量同步
+
+⑤ 容量闭环验证：
+```
+全站峰值 200万条/s / 32 Job = 6.25万条/s/实例（日常负载）
+大房间 20万条/s 分散在 ~8 Partition → 8 个 Job 各处理 2.5万/s
+每 Job → 100 Gateway = 625 MB/s gRPC 出流量（需万兆网卡）
+100 Gateway × 5万连接 × 200条/s × 250B = 每副本 2.5 GB/s 出带宽 ✓
+```
+
+⑥ 与 Redis PubSub 方案对比：
+| 维度 | Redis PubSub | RocketMQ + Job 路由层 |
+|------|-------------|---------------------|
+| MQ 侧读放大 | N/A（无 MQ） | ❌ 无（集群消费，每条消息消费一次） |
+| 持久化 | ❌ 无 | ✅ 有（断线可续读） |
+| 背压 | ❌ 慢消费者被踢 | ✅ Lag 增长不丢 |
+| 大房间扇出 | 100 订阅者压垮 Redis 单线程 | Job 侧 gRPC 扇出，万兆网卡承载 |
+| 故障恢复 | 消息丢失无法追溯 | Rebalance ~20s 自动恢复 |
 :::
 
 ### Q2：点播弹幕按 `video_id + bucket`（每 30s）做 Redis ZSet 分片，但有一个热门番剧的某一集开头 30s 弹幕就有 2000 万条，ZSet 根本存不下。你怎么处理？拉取时怎么保证不影响用户体验？
@@ -1002,18 +1100,19 @@ AI 审核 Worker:
 
 ### Q5：AI 审核是异步的，用户发的违规弹幕可能已经推送给了几十万用户，这怎么下架？下架能不能做到 1s 内所有客户端看不到？
 
-**参考答案：Redis 墓碑 Set + WS长链接服务 广播删除 + 客户端差集过滤。**
+**参考答案：Redis 墓碑 Set + RocketMQ 广播 Topic 删除指令 + Job 路由层分发 + 客户端差集过滤。**
 
 :::warning
 ① 直播场景（强实时）：
 - AI 判定违规后：
   - `UPDATE danmu SET status=2` (MySQL)
   - `SADD danmu:tombstone:live:{room_id} {danmu_id}` (Redis)
-  - **广播删除指令**：`PUBLISH room_channel:{room_id}:{shard} {"type":"delete","id":danmu_id}`
+  - **投递删除指令到 RocketMQ**：`topic_danmu_live_broadcast` 消息体 `{"type":"delete","room_id":xxx,"id":danmu_id}`
+- Job 路由层消费删除指令后，按路由表推送到所有持有该房间连接的 WS长链接服务 节点
 - WS长链接服务 副本收到删除指令：
   - 本地推送给所有该房间的连接：`{"cmd":"hide","ids":[xxx]}`
   - 客户端收到后从渲染队列移除该 ID，从屏幕已渲染的弹幕中隐藏
-- 端到端延迟：AI 审核 300ms + PubSub 20ms + 推送 100ms ≈ 500ms，< 1s ✓
+- 端到端延迟：AI 审核 300ms + MQ 投递+Job 消费 10ms + gRPC 推送 5ms + Gateway 广播 100ms ≈ 415ms，< 1s ✓
 
 ② 点播场景（弱实时）：
 - 同样 SADD 墓碑
@@ -1027,8 +1126,9 @@ AI 审核 Worker:
 - 墓碑 TTL 24h（直播）/ 30天（点播），过期后弹幕状态已经同步到 MySQL，从冷链路过滤
 
 ④ 性能：
-- PubSub 删除广播是独立频道，不受弹幕主流量影响
+- 删除指令与普通弹幕共用同一个 `topic_danmu_live_broadcast`，但标记为高优先级（msg_type=delete），Job 路由层优先处理
 - WS长链接服务 广播删除时做批量聚合（50ms 合并窗口），减少对连接的写次数
+- RocketMQ 持久化保证：即使 Gateway 临时断连，重连后 Job 路由层仍能推送未消费的删除指令（不像 PubSub 会丢失）
 
 ⑤ 真实数据：字节直播审核 P99 延迟 800ms，客户端隐藏 P99 1.2s，极少数超标的是 AI 模型复杂内容（如隐晦政治内容），会进入人审通道。
 :::
@@ -1215,9 +1315,9 @@ AI 审核 Worker:
 
 :::warning
 ① 扩容时机（绝不临时扩）：
-- T-48 小时：根据预估在线数（500万）决定目标副本数（100）
-- T-24 小时：扩容完成，副本启动并 SUBSCRIBE 对应 shard 频道（但此时还没用户连入）
-- T-6 小时：灰度切流 10%（通过 DNS / 智能路由），观察连接均衡性
+- T-48 小时：根据预估在线数（500万）决定目标副本数（100）+ Job 路由层实例数（32）
+- T-24 小时：WS长链接服务 副本扩容完成，启动后向 Job 路由层注册自身地址（但此时还没用户连入，路由表为空）
+- T-6 小时：灰度切流 10%（通过 DNS / 智能路由），观察连接均衡性和 Job 路由表构建是否正常
 - T-0 时：完全开放，DNS 返回所有副本 IP，客户端连接自然分散
 
 ② 一致性哈希：
@@ -1228,21 +1328,22 @@ AI 审核 Worker:
 ③ 冷启动预热（关键）：
 - 新 WS长链接服务 副本启动后，立即：
   1. 加载本地缓存（最近 1000 条弹幕预拉）
-  2. SUBSCRIBE 所属 shard PubSub
+  2. 与 Job 路由层建立 gRPC 双向流连接（用于接收消息推送）
   3. 对本地 goroutine 池预热（避免首批用户连入时 goroutine 冷启动抖动）
   4. TCP 连接池预建（到下游审核、发送服务）
 - 预热不完成，不向负载均衡注册，不接收用户流量
+- 就绪探针：确认 gRPC stream 已建立 + 能收到 Job 路由层的心跳测试消息
 
 ④ 扩容中断的风险和应对：
 - **风险 A：新副本启动失败**：K8s 就绪探针探测不通过，不注册到 LB，流量不受影响
-- **风险 B：副本启动成功但 PubSub 订阅延迟**：前几秒收不到消息，该副本用户看不到弹幕
-  - 应对：就绪探针包含"PubSub SUBSCRIBE 确认收到测试消息"才算就绪
+- **风险 B：副本启动成功但 gRPC stream 未就绪**：前几秒收不到消息，该副本用户看不到弹幕
+  - 应对：就绪探针包含"gRPC stream 已建立 + 收到 Job 心跳"才算就绪
 - **风险 C：扩容到一半被紧急回滚**：部分用户连在新副本，LB 把它们摘除会导致断连
   - 应对：回滚时先 drain（新连接停止分配到该副本，现有连接保留），5 分钟后关闭
 - **风险 D：负载不均**：有的副本 1万连接，有的 8万
   - 应对：实时监控副本连接数，超过阈值的副本临时摘除接新连接，客户端重连时自然均衡
-- **风险 E：扩容造成 Redis PubSub 订阅压力激增**：100 副本全部订阅会让 Redis PubSub 主节点 CPU 飙升
-  - 应对：PubSub 频道按 shard 拆分，新副本订阅自己 shard 的子频道，不增加单频道订阅数
+- **风险 E：Job 路由层路由表膨胀**：100 副本 × 百万房间的路由条目导致单 Job 内存压力
+  - 应对：路由表只存有连接的房间映射，大型赛事单房间场景下路由表条目很少（1 个 room_id → 100 个 gateway_addr）；日常场景百万房间 × 平均 3 副本 ≈ 300 MB 可控
 
 ⑤ 缩容：
 - 赛事结束后逐步缩容，drain 每个副本 10 分钟，让用户自然迁移

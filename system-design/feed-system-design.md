@@ -7,10 +7,10 @@
 
 | # | 决策 | 选择 | 核心理由 |
 |---|------|------|---------|
-| 1 | **推拉阈值量化** | 5000粉丝 | Redis 集群峰值承载（512分片 × 10万 × 0.7 = 3584万 ZADD/s）÷ 发帖 QPS（10万）= 358人均摊，结合粉丝分布取5000作平衡点，非经验值 |
+| 1 | **推拉阈值量化** | 5000粉丝 | Redis 集群裸容量（768分片 × 10万 = 7680万 ZADD/s），安全水位70%即5376万/s，实际 Fan-out 写入约5000万/s（10万发帖 × 平均500粉丝），利用率65%在安全水位内。阈值5000保证99%用户走推模型，大V拉模型不写 inbox |
 | 2 | **inbox 冷热分离** | Redis 存最近100条（自适应扩至1000条），MySQL 存3000条，HBase 存全量 | 100条覆盖95%刷流场景，全量存 Redis 需22TB（不可接受），按活跃度自适应容量降低重度用户的"翻到冷数据"概率 |
 | 3 | **帖子内容与 Feed 列表分离** | inbox 只存 post_id，内容独立缓存 | 帖子修改/删除只需更新帖子缓存（O(1)），若 inbox 存内容则需 O(粉丝数) 次更新 |
-| 4 | **Fan-out 令牌桶控速** | 每 Worker 上限 1万 ZADD/s | 1500台 Worker × 1万/s = 1500万 ZADD/s，低于 Redis 集群峰值，防止写入洪峰击穿 |
+| 4 | **Fan-out 令牌桶控速** | 每 Worker 上限 3.5万 ZADD/s | 1500台 Worker × 3.5万/s = 5250万 ZADD/s ≥ 实际5000万/s需求，令牌桶平滑突发，防止毫秒级写入洪峰击穿单分片 |
 | 5 | **大V发帖延迟分发** | Kafka 延迟投递5分钟 | 1亿粉丝集中刷新产生1亿次 author_posts ZSet 读，延迟+本地缓存(1s TTL)将 Redis 实际读降至2400次/s |
 | 6 | **取关惰性清理** | 不主动 ZREM inbox，拉取时 HashMap 过滤 | inbox 最多100条，过滤 O(100) < 0.1ms；主动清理需遍历粉丝所有 inbox 代价为 O(粉丝数 × 100) |
 | 7 | **会话快照分页** | 以 sessionStartTime 锁定 Feed 上界，新内容用"顶部气泡"通知 | 彻底解决 Fan-out 在翻页中途插入新帖导致的"幽灵帖跳页"问题 |
@@ -76,7 +76,8 @@
 ```
 Fan-out 写放大验证：
   发帖 10万 QPS × 平均粉丝500（推模型用户）= 5000万 ZADD/s
-  Redis 单分片 10万 QPS，所需分片 = 5000万 ÷ 10万 = 500分片（见 Redis 集群部分）
+  Redis 单分片 10万 QPS，所需分片 = 5000万 ÷ 10万 = 500分片
+  加30%安全余量：500 ÷ 0.7 ≈ 715分片，向上取整到 **768分片**（见 Redis 集群部分）✓
 
 Feed 拉取验证：
   500万 QPS × 每次拉20条 = 1亿条帖子/s 从缓存返回
@@ -98,7 +99,7 @@ Feed 拉取验证：
 | 数据 | 计算过程 | 估算结果 | 说明 |
 |------|---------|---------|------|
 | 帖子表 | 5000亿条 × 500B/条 ÷ 1024⁴ | **≈ 230 TB** | 文本内容+元信息，媒体文件走 OSS 存储 |
-| 关注关系表 | 5000亿对 × 32B/条 ÷ 1024⁴ | **≈ 15 TB** | (follower_uid, followee_uid) + 时间戳 |
+| 关注关系表 | 5000亿对 × 32B/条 × 2（正向+反向）÷ 1024⁴ | **≈ 30 TB** | 双向表各一份，保证正向/反向查询单库完成 |
 | 用户 inbox | 见下方 Redis 拆解 | **≈ 3 TB（Redis）** | 每用户最近3000条 Feed 的帖子ID列表 |
 | 帖子内容缓存 | 热门帖子约5亿条 × 1KB/条 ÷ 1024³ | **≈ 500 GB（Redis）** | 热门帖子内容缓存，LRU淘汰 |
 | Kafka 消息 | 10万 QPS × 1KB/条 × 86400s × 7天 ÷ 1024⁴ | **≈ 60 TB/周** | Fan-out Topic 消息，7天保留 |
@@ -129,8 +130,9 @@ Feed 拉取验证：
 **DB 分库分表：**
 - **MySQL 单主库安全写入上限**：保守取 **3000 TPS**
 - **帖子主表**：10万 TPS（发帖直写）÷ 3000 = 34，取 **64库**，分1024表（按 post_id 分片）
-- **关注关系表**：写入低频，但读取极高，取 **32库**，分256表（按 follower_uid 分片）
-- **用户 inbox 冷数据表**（Redis 未覆盖的3000条以外）：取 **32库**，分256表（按 uid 分片）
+- **关注关系正向表**：按 follower_uid 分片，取 **32库**，分256表（查"我关注了谁"单库完成）
+- **关注关系反向表**：按 followee_uid 分片，取 **32库**，分256表（Fan-out查粉丝列表单库完成）
+- **用户 inbox 冷数据表**（Redis 未覆盖的历史数据）：取 **32库**，分256表（按 uid 分片）
 
 **Kafka 集群：**
 - **单 Broker 单分区安全吞吐**：约 **5万条/s**（1KB消息，NVMe SSD，异步刷盘）
@@ -139,15 +141,28 @@ Feed 拉取验证：
 
 **服务节点（Go 1.21，8核16G）：**
 
-| 服务 | 单机安全 QPS | 有效 QPS | 节点数 |
-|------|-------------|---------|--------|
-| Feed 拉取服务 | 3000（本地缓存命中70%，剩余走Redis，逻辑轻） | 500万 | **取2400台** |
-| 发帖服务 | 1000（DB写入+消息发送+媒体校验，链路中等） | 10万 | **取150台** |
-| Fan-out Worker | 5000（纯消费MQ+Redis ZADD，IO密集） | 5000万写/s | **取1500台（每台消费3.3万/s）** |
-| 推荐流服务 | 500（模型推理+召回，CPU重） | 50万 | **取1500台** |
-| 通知服务 | 10000（轻量，推送为主） | 200万 | **取300台** |
+| 服务 | 单机安全 QPS | 峰值需求 | 计算过程 | 节点数 |
+|------|-------------|---------|---------|--------|
+| Feed 拉取服务 | 3000（本地缓存命中70%，剩余走Redis，逻辑轻） | 500万 QPS | 500万 ÷ 3000 ÷ 0.7 ≈ 2381 | **取2400台** |
+| 发帖服务 | 1000（DB写入+消息发送+媒体校验，链路中等） | 10万 QPS | 10万 ÷ 1000 ÷ 0.7 ≈ 143 | **取150台** |
+| Fan-out Worker | 3.5万 ZADD/s（Kafka消费+Redis Pipeline批量写，IO密集） | 5000万 ZADD/s | 5000万 ÷ 3.5万 ÷ 0.7 ≈ 2041 | **取1500台**（HybridMode下实际写入降30%，1500台即够） |
+| 推荐流服务 | 500（模型推理+召回，CPU重） | 50万 QPS | 50万 ÷ 500 ÷ 0.7 ≈ 1429 | **取1500台** |
+| 通知服务 | 10000（轻量，推送为主） | 200万 QPS | 200万 ÷ 10000 ÷ 0.7 ≈ 286 | **取300台** |
 
-> 冗余系数统一取 **0.7**，与前两个系统一致。
+> 冗余系数统一取 **0.7**。Fan-out Worker 单机吞吐 3.5万 ZADD/s 来源：Redis Pipeline 批量100条/次 × 单次RTT 0.5ms × 8并发连接 ≈ 单机理论极限16万/s，实际含 Kafka Poll + 序列化开销后取保守值3.5万/s。
+
+**资源成本概算（自建IDC，年化）：**
+
+| 资源类型 | 规模 | 单价参考 | 年化成本 |
+|---------|------|---------|---------|
+| 应用服务器（8C16G） | 5850台 | 5万/台/年（含运维） | **2.9亿** |
+| Redis（64G内存，主从） | 768×3=2304实例 | 8万/台/年 | **1.8亿** |
+| MySQL（高IO型） | 160主+320从=480台 | 10万/台/年 | **0.5亿** |
+| Kafka + HBase + ES | 约100台 | 8万/台/年 | **0.08亿** |
+| 网络带宽（400Gbps出口） | 专线+CDN | — | **0.5亿** |
+| **合计** | — | — | **≈ 5.8亿/年** |
+
+> 成本优化方向：① Fan-out Worker 峰谷弹性伸缩（HPA），非高峰期缩容60%节省1.2亿；② Redis inbox 对非活跃用户（30天未登录）不预分配ZSet，节省40%内存；③ 推荐服务 GPU 推理替代 CPU，1500台降至300台 GPU 机器。
 
 ---
 
@@ -162,7 +177,7 @@ Feed 拉取验证：
 | 模型 | 职责 | 核心属性 | 核心行为 | 存储位置 |
 |------|------|---------|---------|---------|
 | **Post** 帖子 | 帖子全生命周期：草稿→发布→审核→可见→删除 | 帖子ID、作者ID、内容、媒体URL列表、可见性（公开/关注/私密）、状态、发布时间 | 发布、删除、修改可见性、审核状态变更 | MySQL 按 `post_id` 分库分表（写权威）+ Redis 帖子内容缓存 |
-| **Follow** 关注关系 | 用户间关注关系图 | 关注者ID、被关注者ID、关注时间、关系状态 | 关注、取关、查粉丝列表、查关注列表 | MySQL 双向表（按 follower_uid / followee_uid 各分一份）+ Redis 关注集合缓存 |
+| **Follow** 关注关系 | 用户间关注关系图 | 关注者ID、被关注者ID、关注时间、关系状态 | 关注、取关、查粉丝列表、查关注列表 | MySQL 正向表（follower_uid分片，查关注列表）+ 反向表（followee_uid分片，查粉丝列表）+ Redis 关注集合缓存 |
 
 > Feed 领域真正的写实体只有两个：`Post`（内容）和 `Follow`（关系图）。其他"模型"本质上都是由这两个实体衍生出来的事件或视图。特别要注意：**UserInbox 不是实体**——它不存储业务事实，只存储 `post_id` 引用，完全可以由 `Post + Follow` 重新物化。
 
@@ -254,8 +269,8 @@ CREATE TABLE post (
 
 
 -- =====================================================
--- 关注关系表（按 follower_uid % 32 分32库，% 256 分256表）
--- 读多写少，follower_uid 分片保证"查我关注的人"单库完成
+-- 关注关系正向表（按 follower_uid % 32 分32库，% 256 分256表）
+-- 用途：查"我关注了谁"，follower_uid 分片保证单库完成
 -- =====================================================
 CREATE TABLE follow_relation (
   id            BIGINT       NOT NULL AUTO_INCREMENT,
@@ -265,8 +280,25 @@ CREATE TABLE follow_relation (
   status        TINYINT      NOT NULL DEFAULT 1 COMMENT '1有效 2已取关',
   PRIMARY KEY (id),
   UNIQUE KEY uk_follower_followee (follower_uid, followee_uid) COMMENT '防重复关注',
-  KEY idx_followee_time (followee_uid, follow_time DESC) COMMENT '查我的粉丝（Fan-out用）'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='关注关系表';
+  KEY idx_follower_time (follower_uid, follow_time DESC) COMMENT '查我关注的人列表'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='关注关系正向表（按follower分片）';
+
+
+-- =====================================================
+-- 关注关系反向表（按 followee_uid % 32 分32库，% 256 分256表）
+-- 用途：查"谁关注了我"（即粉丝列表），Fan-out Worker 消费时按此表分页读粉丝
+-- 双写一致性：关注操作在同一事务内写正向表，事务提交后异步双写反向表（MQ保证最终一致）
+-- =====================================================
+CREATE TABLE follow_relation_reverse (
+  id            BIGINT       NOT NULL AUTO_INCREMENT,
+  followee_uid  BIGINT       NOT NULL  COMMENT '被关注者',
+  follower_uid  BIGINT       NOT NULL  COMMENT '粉丝',
+  follow_time   DATETIME     NOT NULL  DEFAULT CURRENT_TIMESTAMP,
+  status        TINYINT      NOT NULL DEFAULT 1 COMMENT '1有效 2已取关',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_followee_follower (followee_uid, follower_uid) COMMENT '防重复+Fan-out游标查询',
+  KEY idx_followee_time (followee_uid, follow_time DESC) COMMENT '按时间倒序分页查粉丝'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='关注关系反向表（按followee分片，Fan-out查粉丝用）';
 
 
 -- =====================================================
@@ -363,7 +395,7 @@ flowchart TD
 
     subgraph 中间件层
         subgraph Redis集群
-            REDIS_INBOX["Inbox集群\n512分片 × 1主2从\n用户关注流ZSet"]
+            REDIS_INBOX["Inbox集群\n768分片 × 1主2从\n用户关注流ZSet"]
             REDIS_POST["帖子缓存集群\n64分片 × 1主2从\n热帖内容String"]
             REDIS_FOLLOW["关注图缓存集群\n32分片 × 1主2从\n粉丝列表ZSet"]
             REDIS_RECO["推荐缓存集群\n32分片 × 1主2从\n预生成推荐ZSet"]
@@ -491,15 +523,40 @@ func getFanoutMode(authorUID int64) FanoutMode {
 4. Fan-out Worker 异步处理（topic_fanout 消费）：
    a. 读取 fanout_mode
    b. PushMode：
-      - 分页查 follow_relation（每页1000个粉丝）
+      - 分页查 follow_relation_reverse（按followee分片，每页1000个粉丝）
       - 批量 ZADD inbox:{uid} score(publish_time) post_id（Pipeline 批量）
       - 每页写完后更新 fanout_task.pushed_fans + last_fan_uid（断点续传）
-      - 同步写 user_inbox 冷数据表（去重幂等）
-   c. PullMode：不写 inbox，仅更新 post 索引（让拉取时能找到此帖）
+      - 异步写 user_inbox 冷数据表（见下方双写一致性方案）
+   c. PullMode：不写 inbox，仅更新 author_posts ZSet（让拉取时能找到此帖）
    d. HybridMode：只推 30 天内活跃的粉丝（ZSET 维护活跃用户名单）
 
-关键：Fan-out 采用"令牌桶"控速，每个 Worker 处理速率上限 1万 ZADD/s，
+关键：Fan-out 采用"令牌桶"控速，每个 Worker 处理速率上限 3.5万 ZADD/s，
       避免 Redis 集群瞬时写入过载
+```
+
+**Inbox Redis-MySQL 双写一致性方案：**
+
+```
+写入策略：先 Redis 后 MySQL，异步补偿保证最终一致
+
+流程：
+  1. Fan-out Worker 批量 ZADD inbox:{uid}（Redis Pipeline）→ 立即返回成功
+  2. 写入成功的 post_id 列表发送到内部 channel（本地缓冲队列，容量10000）
+  3. 后台协程批量写 MySQL user_inbox（INSERT IGNORE，按 uid 聚合，每100条/批）
+  4. MySQL 写入失败：记录到本地失败日志（WAL文件），补偿协程每30s重试
+
+一致性保证：
+  - Redis 先写：用户立即可见（满足"Fan-out P99 < 3s"的 SLA）
+  - MySQL 延迟写：允许秒级延迟，翻页到冷数据时才用到 MySQL
+  - 丢失兜底：即使 MySQL 写失败，inbox 数据可从 Kafka topic_fanout 回放重建
+  - 定时对账：每日凌晨，随机抽样1%用户比对 Redis inbox 与 MySQL 数据是否一致
+
+故障场景处理：
+  - Worker 宕机（Redis 已写，MySQL 未写）：fanout_task 记录了 last_fan_uid 游标，
+    重启后从断点续传，MySQL 用 UNIQUE KEY 幂等去重
+  - Redis 宕机（Redis 未写成功）：Worker 重试 ZADD 直到成功或超过阈值走降级
+  - MySQL 持续不可用：inbox 冷数据暂时缺失，用户翻页超过100条时降级返回
+    "暂时无法加载更多"，不影响热数据体验
 ```
 
 ### 5.2 Feed 拉取流程（核心，P99 < 50ms）
@@ -590,9 +647,11 @@ func mergeBigVPosts(ctx context.Context, bigVUIDs []int64, cursor *FeedCursor, l
 
 ```
 关注操作触发：
-1. 写 follow_relation 表（同步）
-2. 更新关注图缓存（Redis ZADD follow:{follower} followee_uid，ZADD fans:{followee} follower_uid）
-3. 发 Kafka topic_follow_action（异步修复 inbox）
+1. 写 follow_relation 正向表（同步，事务内）
+2. 发 Kafka topic_follow_action（异步完成以下操作）：
+   a. 写 follow_relation_reverse 反向表（最终一致，UNIQUE KEY幂等去重）
+   b. 更新关注图缓存（Redis ZADD follow:{follower} followee_uid，ZADD fans:{followee} follower_uid）
+   c. 修复 inbox（补历史帖子）
 
 Kafka 消费（Follow Worker）：
   如果被关注者是普通用户（粉丝 ≤ 5000）：
@@ -652,14 +711,16 @@ CDN（媒体内容）：
 Key：inbox:{uid}
 类型：ZSet
 member：post_id（雪花ID，8B）
-score：publish_time（Unix 毫秒时间戳，8B）+ 算法权重修正
+score：publish_time（Unix 毫秒时间戳，8B）
 
-容量限制：最多100条（ZADD 后执行 ZREMRANGEBYRANK inbox:{uid} 0 -101 删除最旧的）
+容量限制：根据用户活跃度自适应（100~1000条），ZADD 后 ZREMRANGEBYRANK 删除最旧的
 
 为什么 score 用时间戳而非算法分？
-  - 时间戳：稳定，不会因算法变化而失效；支持游标翻页
-  - 算法分：会随模型更新而变化，导致历史 inbox 排序错乱
-  - 折中：score = publish_time_ms，排序分在拉取时由 Feed 服务实时重排（在内存中）
+  - 关注流定位：纯时间序排列，保证"关注的人最新动态"的用户预期
+  - 算法排序职责分离：推荐流负责"算法推荐"，关注流负责"时间线"
+  - 游标分页友好：时间戳单调递增，翻页无回环无空洞
+  - 实时重排范围有限：拉取20条后可按互动数微调顺序（如好友帖子提权），
+    但仅在同一页内局部重排，不跨页调序（跨页会破坏翻页一致性）
 ```
 
 ### 6.3 帖子删除的缓存一致性
@@ -692,18 +753,17 @@ score：publish_time（Unix 毫秒时间戳，8B）+ 算法权重修正
 - Kafka 单分区安全吞吐约 **5万条/s**（1KB消息，NVMe SSD，异步刷盘，批量写入）
 - 所需分区数 = 峰值速率 ÷ (单分区吞吐 × 冗余系数 0.7)，取 2 的幂次
 
-| Topic | 峰值速率 | 分区数计算 | 分区数 | 刷盘 | 用途 | 消费者 |
+| Topic | 峰值速率 | 峰值推导 | 分区数 | 刷盘 | 用途 | 消费者 |
 |-------|---------|-----------|--------|------|------|--------|
-| `topic_fanout` | 10万条/s（每次发帖一条） | 10万 ÷ (5万 × 0.7) ≈ 3，最少保证并发消费 | **512** | 异步 | 驱动 Fan-out，分区数=Worker数，保证并发 | Fan-out Worker |
-| `topic_post_audit` | 10万条/s | 10万 ÷ (5万 × 0.7) ≈ 3 | **16** | 同步 | 内容审核（违规下架，不允许丢） | 审核服务 |
-| `topic_follow_action` | 100万条/s（关注/取关操作） | 100万 ÷ (5万 × 0.7) ≈ 29 | **64** | 异步 | 关注后 inbox 修复、粉丝图更新 | Follow Worker |
-| `topic_post_delete` | < 1万条/s（删帖操作低频） | — | **16** | 同步 | 删帖缓存失效广播 | 所有 Feed 服务实例 |
-| `topic_recommend_update` | 10万条/s | 10万 ÷ (5万 × 0.7) ≈ 3 | **32** | 异步 | 通知推荐系统新帖入库，触发候选更新 | 推荐系统 |
+| `topic_fanout` | 10万条/s | 发帖峰值10万QPS，每帖一条消息 | **512** | 异步 | 驱动 Fan-out，分区数≥Worker消费者组数，保证并发 | Fan-out Worker |
+| `topic_post_audit` | 10万条/s | 与发帖1:1 | **16** | 同步 | 内容审核（违规下架，不允许丢） | 审核服务 |
+| `topic_follow_action` | 5万条/s | 5亿DAU × 平均2次关注/天 ÷ 86400 × 峰值系数5 ≈ 5.8万，取5万 | **32** | 异步 | 关注后 inbox 修复、粉丝图更新 | Follow Worker |
+| `topic_post_delete` | < 1万条/s | 删帖操作低频 | **16** | 同步 | 删帖缓存失效广播 | 所有 Feed 服务实例 |
+| `topic_recommend_update` | 10万条/s | 与发帖1:1 | **32** | 异步 | 通知推荐系统新帖入库，触发候选更新 | 推荐系统 |
 
 > **topic_fanout 为何分区数高达 512？**
 > Fan-out Worker 需要高并发（1500台），每台消费一个或多个分区，分区数 = 最大并发消费者数。
-> 512 分区 × 单分区 5万/s × 0.7 = 1792万条/s，远超发帖 10万/s × 平均粉丝 500 = 5000万次 ZADD/s 需求？
-> 注意区分：Kafka 消息速率（10万/s）vs Fan-out 写入速率（5000万 ZADD/s），Kafka 是驱动层，Worker 内部并发写 Redis。
+> 注意区分：Kafka 消息速率（10万条/s）vs Fan-out 写入速率（5000万 ZADD/s）——每条 Kafka 消息触发一次 Fan-out（平均500粉丝 × ZADD），Kafka 是驱动层，Worker 内部 Pipeline 批量写 Redis。
 
 ### 7.2 Fan-out 消息可靠性
 
@@ -722,7 +782,7 @@ score：publish_time（Unix 毫秒时间戳，8B）+ 算法权重修正
 
 Fan-out SLA 保障（P99 < 3s）：
   - 普通用户（粉丝 ≤ 5000）：10万 QPS 发帖，每帖最多5000 ZADD
-    单 Worker 处理能力：1万 ZADD/s，5000 ZADD 耗时 500ms ✓
+    单 Worker 处理能力：3.5万 ZADD/s，5000 ZADD 耗时约143ms ✓
   - 大V发帖：不计入 Fan-out SLA（拉模型不需要 Fan-out，粉丝实时拉取）
   - 混合模式（1万~100万粉丝）：只推活跃粉丝（占30%），Fan-out 量级降低70%
 ```
@@ -758,12 +818,13 @@ Fan-out SLA 保障（P99 < 3s）：
   平均粉丝数 = F
   Fan-out 写入速率 = 10万 × F 次 ZADD/s
 
-  Redis 安全写入上限 = 512分片 × 10万/分片 × 0.7 = 3584万 ZADD/s
-  最大可承受平均粉丝数 F = 3584万 ÷ 10万 = 358人
+  Redis 集群裸容量 = 768分片 × 10万/分片 = 7680万 ZADD/s
+  安全水位（70%）= 7680万 × 0.7 = 5376万 ZADD/s
+  最大可承受平均粉丝数 F = 5376万 ÷ 10万 = 537人
 
   但发帖用户分布不均，99%的用户粉丝 < 5000，1%的大V粉丝 > 5000
-  按此分布：平均 Fan-out 写入 = 10万 × 99% × 平均500粉丝 = 4950万/s ≈ 5000万/s
-  此时 Redis 承压约 5000万 ÷ 512分片 = 9.8万/分片（接近上限）
+  按此分布：实际 Fan-out 写入 = 10万 × 99% × 平均500粉丝 = 4950万/s ≈ 5000万/s
+  集群利用率 = 5000万 ÷ 7680万 = 65%（在安全水位内）✓
 
   如果阈值降到 1000 粉丝：
     更多用户走拉模型，Fan-out 写入降低，但 Feed 拉取时大V帖子合并成本上升
@@ -944,7 +1005,7 @@ feed.big_v.delay_seconds: 300            # 大V发帖延迟分发时间
 ### 10.2 Redis inbox 集群扩容
 
 ```
-当前：512分片（inbox 集群）→ 扩容至 1024 分片
+当前：768分片（inbox 集群）→ 扩容至 1536 分片（DAU增长或峰值超预期时）
 
 ZSet 迁移注意事项（与普通 String 不同）：
   - ZSet 迁移期间，同一用户 inbox 可能被路由到新旧两个分片
@@ -954,7 +1015,7 @@ ZSet 迁移注意事项（与普通 String 不同）：
     迁移期间 Redis Cluster 自动处理 MOVED 重定向，业务无感知
   
   扩容步骤：
-  1. 新增 512 个分片节点加入集群
+  1. 新增 768 个分片节点加入集群（每个新节点1主2从）
   2. 执行 reshard，将 slot 从旧分片迁移到新分片（在线迁移，不停服）
   3. 迁移期间 P99 略有上升（MOVED 重定向额外一跳），监控 < 5ms 上升可接受
   4. 迁移完成后，本地缓存 TTL 延长（避免扩容后瞬时读 Redis 洪峰）
@@ -985,13 +1046,35 @@ ZSet 迁移注意事项（与普通 String 不同）：
 ```
 热数据（0~100条）   : Redis inbox ZSet（实时拉取，< 2ms）
 温数据（100~3000条）: MySQL user_inbox 冷数据表（翻页查询，< 50ms）
-冷数据（3000条以上）: HBase（海量历史，RowKey=(uid+score)，范围查询）
+冷数据（3000条以上）: HBase（海量历史，范围查询，< 200ms）
 归档数据（1年以上） : OSS 对象存储（用户请求"我的历史帖子"时按需加载）
 
+HBase 设计：
+  RowKey = reverse(uid) + (Long.MAX_VALUE - score)
+    - reverse(uid)：uid 反转避免 Region 热点（连续 uid 不写同一 Region）
+    - Long.MAX_VALUE - score：时间戳取反实现按时间倒序排列，Scan 自然降序
+  Column Family = cf:feed
+    - cf:feed:post_id     帖子ID
+    - cf:feed:author_uid  作者ID
+    - cf:feed:source      来源（push/pull）
+  预分裂：按 uid 前两位（00~99）预分100个 Region，避免建表初期热点
+  TTL：列族级别设置 TTL=365天，超期自动过期删除
+  压缩：Snappy 压缩，空间节省约 60%
+
+归档链路（ETL）：
+  MySQL → HBase：
+    - Flink 流式消费 MySQL binlog（通过 Canal/Debezium）
+    - 实时写入 HBase（非定时批量，保证翻页连续性）
+    - MySQL 中超过3000条的数据标记 archived=1，定期物理删除
+  HBase → OSS：
+    - 每月执行 HBase Snapshot → Export 为 Parquet
+    - Parquet 文件按 uid 前缀分目录存储到 OSS
+    - 用户点击"加载更多历史"时，从 OSS 读取对应 Parquet 文件
+
 触发方式：
-  - Fan-out 写入 Redis inbox 时，若超过100条，ZREMRANGEBYRANK 弹出最旧的写入 MySQL
-  - MySQL user_inbox 超过 3000 条/用户，定时归档到 HBase（每日凌晨执行）
-  - HBase 超过1年数据，导出 Parquet 文件到 OSS
+  - Fan-out 写入 Redis inbox 时，若超过用户容量上限，ZREMRANGEBYRANK 弹出最旧的
+  - MySQL user_inbox 数据通过 Flink + Canal 实时同步到 HBase
+  - MySQL 中 archived=1 的数据每周清理一次（保留最近3000条不归档）
 ```
 
 ---
@@ -1002,11 +1085,51 @@ ZSet 迁移注意事项（与普通 String 不同）：
 
 | 组件 | 高可用方案 |
 |------|-----------|
-| Redis inbox | Cluster 模式，512分片，每分片1主2从，跨可用区，哨兵切换 < 30s |
-| MySQL | MHA 主从，binlog 实时同步，跨机房备份，切换 < 60s |
-| Kafka | 8主8从，副本数=3，ISR同步，Broker 故障自动 Leader 选举 < 30s |
+| Redis inbox | Cluster 模式，768分片，每分片1主2从，跨可用区部署，故障自动 Failover < 30s |
+| MySQL | MHA 主从，binlog 半同步复制，跨机房从库备份，主故障自动切换 < 60s |
+| Kafka | 8主8从，副本数=3，min.insync.replicas=2，Broker 故障自动 Leader 选举 < 30s |
 | 服务层 | K8s 多副本，3可用区均匀分布，健康检查失败 15s 内摘流 |
-| 全局 | 同城双活，DNS 调度，单可用区故障 5min 内流量切换 |
+
+**同城双活架构（核心）：**
+
+```
+部署拓扑：同城3可用区（AZ-A / AZ-B / AZ-C），单元化部署
+
+┌─────────────────────────────────────────────────────────────────┐
+│                          全局层                                   │
+│   DNS 智能解析 → LVS（3AZ各一套）→ 网关（3AZ各一套）            │
+└─────────────────────────────────────────────────────────────────┘
+
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│    AZ-A      │   │    AZ-B      │   │    AZ-C      │
+│  服务层全套   │   │  服务层全套   │   │  服务层全套   │
+│  Redis 256分片│   │  Redis 256分片│   │  Redis 256分片│ ← 768分片按AZ均分
+│  MySQL 主（A）│   │  MySQL 从（B）│   │  MySQL 从（C）│ ← 主在A，从跨AZ
+│  Kafka Broker │   │  Kafka Broker │   │  Kafka Broker │ ← 3副本跨AZ
+└──────────────┘   └──────────────┘   └──────────────┘
+
+数据层策略：
+  - Redis：768分片的主节点按 hash slot 均匀分布在3个AZ，从节点跨AZ部署
+    单AZ故障 → 该AZ的主分片自动Failover到其他AZ从节点（< 30s）
+    期间该AZ流量由网关切到其余2个AZ（DNS权重调0）
+  - MySQL：写主库在 AZ-A，读从库跨3个AZ
+    AZ-A故障 → MHA自动将AZ-B从库提升为主（< 60s）
+    binlog半同步保证切换后数据损失 < 1s
+  - Kafka：每个Topic的3副本分布在不同AZ，ISR跨AZ
+    单AZ故障不影响消息生产和消费（ISR仍有2/3可用）
+
+故障切换时序：
+  1. 检测（10s）：健康检查连续3次失败
+  2. 决策（5s）：控制面确认AZ级故障（非单机故障）
+  3. 切流（15s）：DNS权重置0 + 网关摘除 + Redis Failover
+  4. 恢复稳定（30s）：新主就绪，Fan-out Worker重新Rebalance
+  5. 总RTO < 60s，RPO < 1s（半同步复制保证）
+
+Fan-out 跨AZ一致性：
+  - fanout_task 表存储在MySQL主库（任何AZ的Worker都写同一套主库）
+  - Worker消费Kafka后写Redis分片，分片可能在任意AZ（Redis Cluster自动路由）
+  - 跨AZ网络延迟约0.5ms，对Fan-out P99影响 < 2ms（可接受）
+```
 
 ### 11.2 核心监控指标
 
@@ -1016,7 +1139,7 @@ ZSet 迁移注意事项（与普通 String 不同）：
 feed_fanout_lag_p99          Fan-out 延迟 P99（< 3s，超过30s告警）
 feed_staleness_rate           用户 Feed 新鲜度（最新帖子距当前时间，< 10s为新鲜）
 feed_missing_post_rate        关注用户的帖子未在 Feed 中出现的比例（< 0.1%）
-feed_ghost_post_rate          已删帖仍出现在 Feed 的比例（= 0，> 0 触发P0）
+feed_ghost_post_rate          已删帖持续>5min仍出现在 Feed 的比例（> 0.01% 触发P0）
 ```
 
 **性能指标：**
@@ -1052,7 +1175,7 @@ fanout_task_pending_count     待处理 Fan-out 任务数（> 10万条告警）
 【活动前72h（春晚/世界杯）】
   □ 预扩容 Fan-out Worker（1500台 → 4500台）
   □ 预扩容 Feed 拉取服务（2400台 → 7200台）
-  □ Redis inbox 集群扩容验证（512分片 → 1024分片）
+  □ Redis inbox 集群扩容验证（768分片 → 1536分片）
   □ 调低推拉切换阈值（5000粉丝 → 2000粉丝，降低 Fan-out 写压力）
   □ 全链路压测（模拟 1000万 QPS 拉流 + 20万 QPS 发帖，持续30min）
   □ 演练大V发帖雪崩场景（模拟1亿粉丝大V发帖，验证拉模型切换）
@@ -1076,6 +1199,40 @@ fanout_task_pending_count     待处理 Fan-out 任务数（> 10万条告警）
   □ 复盘：Fan-out 延迟、Feed 新鲜度、推荐 CTR 变化趋势
   □ 冷数据归档（活动期间大量 inbox 数据超出热数据阈值）
 ```
+
+---
+
+### 11.5 安全与合规
+
+**数据安全：**
+
+| 层面 | 措施 |
+|------|------|
+| 传输加密 | 全链路 TLS 1.3，内网服务间 mTLS（服务网格 Istio 管理证书） |
+| 存储加密 | MySQL 透明加密（TDE），Redis 不加密（纯 ID 无敏感内容），OSS 服务端加密（SSE-KMS） |
+| 敏感字段 | 用户手机号/邮箱在 DB 中 AES-256 加密存储，关注关系本身不含 PII |
+| 访问控制 | DBA 权限分离（只读/读写），线上 Redis 禁用 KEYS/FLUSHALL，审计日志保留180天 |
+
+**内容安全（机审+人审+申诉闭环）：**
+
+```
+发帖 → 机审（文本NLP违禁词+图片OCR+视频帧抽检，P99 < 2s）
+  ├── 通过 → 发布（高信用用户先发后审，机审异步补充）
+  ├── 疑似违规 → 人工审核队列（SLA: 30min 内处理）
+  │     ├── 人审通过 → 发布
+  │     └── 人审不通过 → 下架 + 通知用户
+  └── 明确违规 → 直接下架 + 扣信用分 + 通知用户
+
+用户申诉：
+  - 被下架帖子可申诉（24h内），进入二审队列（不同审核员）
+  - 申诉通过 → 恢复可见 + 触发 Fan-out + 信用分回补
+```
+
+**合规要求（以中国大陆为例）：**
+- 个人信息保护：关注关系属于个人信息，需用户授权后方可用于推荐；用户注销时30天内彻底删除
+- 未成年人保护：青少年模式下限制推荐流内容池，每日浏览时间限制
+- 数据本地化：用户数据不出境，跨国部署需独立集群（如东南亚集群与国内物理隔离）
+- 算法备案：推荐算法需向网信办备案，提供算法说明和关闭入口
 
 ---
 
