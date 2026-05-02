@@ -16,14 +16,6 @@ package main
 // ❓2、是否需要父节点向子节点传递信息？（如路径前缀和）用前序位置 + 函数参数传递
 // ❓3、是否需要按层处理或求最短路径？用层序遍历（BFS）框架而非递归
 
-// 0、func traverse(root *TreeNode)                           // 二叉树递归遍历框架
-// 1、func traverseNary(root *NTreeNode)                      // N叉树递归遍历框架
-// 2、func levelOrderTraverse(root *TreeNode)                 // 二叉树层序遍历框架
-// 3、func levelOrderTraverseNary(root *NTreeNode)            // N叉树层序遍历框架
-// 4、func maxDepth(root *TreeNode) int                       // 二叉树的最大深度
-// 5、func preorderTraversal(root *TreeNode) []int            // 二叉树前序遍历
-// 6、func diameterOfBinaryTree(root *TreeNode) int           // 二叉树的直径
-
 type TreeNode struct {
 	Val   int
 	Left  *TreeNode
