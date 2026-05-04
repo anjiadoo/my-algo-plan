@@ -166,6 +166,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -447,9 +448,87 @@ func advantageCount(nums1 []int, nums2 []int) []int {
 	return res
 }
 
+// 接雨水 https://leetcode.cn/problems/trapping-rain-water/
+func trap(height []int) int {
+	// 类似单调栈的思路，找到中间最高的墙
+	maxIndex := -1
+	maxNum := math.MinInt
+	for i := 0; i < len(height); i++ {
+		if height[i] > maxNum {
+			maxIndex = i
+			maxNum = height[i]
+		}
+	}
+
+	res := 0
+
+	// 保留[0,maxIndex]区间递增的元素
+	var incr []int
+	for i := 0; i <= maxIndex; i++ {
+		if len(incr) > 0 && incr[len(incr)-1] > height[i] {
+			res += incr[len(incr)-1] - height[i]
+		} else {
+			incr = append(incr, height[i])
+		}
+	}
+
+	// 保留[maxIndex,end]区间递减的元素
+	var decr []int
+	for i := len(height) - 1; i > maxIndex; i-- {
+		if len(decr) > 0 && decr[len(decr)-1] >= height[i] {
+			res += decr[len(decr)-1] - height[i]
+		} else {
+			decr = append(decr, height[i])
+		}
+	}
+	return res
+}
+
+func trap2(height []int) int {
+	// 双指针解法，左右两边各维护一堵高墙
+	left, right := 0, len(height)-1
+	lMax, rMax := 0, 0
+	res := 0
+
+	for left < right {
+		lMax = max(lMax, height[left])
+		rMax = max(rMax, height[right])
+		if lMax < rMax {
+			res += lMax - height[left]
+			left++
+		} else {
+			res += rMax - height[right]
+			right--
+		}
+	}
+	return res
+}
+
+// 盛最多水的容器 https://leetcode.cn/problems/container-with-most-water/description/
+func maxArea(height []int) int {
+	left, right := 0, len(height)-1
+	res := 0
+	for left < right {
+		res = max(res, (right-left)*min(height[left], height[right]))
+		if height[left] > height[right] {
+			right--
+		} else {
+			left++
+		}
+	}
+	return res
+}
+
 func main() {
-	fmt.Println(advantageCount([]int{2, 7, 11, 15}, []int{1, 10, 4, 11}))
-	fmt.Println(advantageCount([]int{12, 24, 8, 32}, []int{13, 25, 32, 11}))
+
+	fmt.Println(maxArea([]int{1, 8, 6, 2, 5, 4, 8, 3, 7}))
+	fmt.Println(maxArea([]int{1, 1}))
+
+	//fmt.Println(trap2([]int{0, 1, 0, 2, 1, 0, 1, 3, 2, 1, 2, 1}))
+	//fmt.Println(trap2([]int{4, 2, 0, 3, 2, 5}))
+
+	//fmt.Println(advantageCount([]int{2, 7, 11, 15}, []int{1, 10, 4, 11}))
+	//fmt.Println(advantageCount([]int{12, 24, 8, 32}, []int{13, 25, 32, 11}))
 
 	//fmt.Println(longestCommonPrefix([]string{"flower", "flow", "flight"}))
 	//fmt.Println(longestCommonPrefix([]string{"anjiadoo", "anji", "anjido"}))
