@@ -1470,220 +1470,440 @@ TRTC房间内角色（TRTCRoleType）：
 
 **核心问题：房间在线人数是动态变化的，Tier之间如何无缝切换？谁来触发？切换过程中数据如何迁移？**
 
-**设计思路：在线观众服务内部维护每个房间当前所处的Tier，通过阈值检测+状态机驱动切换，切换过程异步完成，对用户透明。**
+**设计思路：将分层判断+数据操作的"快路径"封装在Redis Lua脚本中原子执行（1次RTT完成进房全部操作），Go应用层只负责Lua不适合做的"慢路径"（异步数据迁移、Gateway通知、MQ广播）。**
 
-```go
-// 房间Tier状态——存储在Redis Hash中
-// room:tier:{room_id} → { current_tier: 2, online_count: 5000, last_upgrade: 1717200000 }
-
-// Tier阈值配置（ETCD动态下发，可热更新）
-var TierConfig = struct {
-    Tier1UpperBound  int   // 1000   — 超过此值升级到Tier2
-    Tier2UpperBound  int   // 10000  — 超过此值升级到Tier3
-    Tier3UpperBound  int   // 1000000 — 超过此值升级到Tier4
-    DowngradeRatio   float // 0.7    — 降到上一级阈值的70%才降级（防抖动）
-    UpgradeCooldown  int   // 60s    — 升级后60秒内不允许降级（防反复切换）
-}
-```
-
-**切换触发机制：**
+**为什么用Lua脚本而非Go应用层多命令：**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Tier切换触发流程                                       │
+│  Go应用层多命令方案的问题（反面教材）                                      │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  触发时机：每次进房/退房操作时，由在线观众服务检查是否需要切换              │
+│  // 非原子操作：读-判断-写之间存在竞态窗口                                │
+│  s.redis.SAdd(ctx, key, userID)          // 步骤1: 写入 — RTT#1         │
+│  count := s.redis.SCard(ctx, key).Val()  // 步骤2: 读取 — RTT#2         │
+│  if count > Threshold {                  // 步骤3: 判断（Go侧）          │
+│      go s.upgradeTier(...)               // 步骤4: 触发                  │
+│  }                                                                      │
 │                                                                         │
-│  ① 进房时检查升级                                                       │
-│     用户进房 → 在线数+1 → 检查：在线数 > 当前Tier上界？                   │
-│     ├── 否：正常处理，按当前Tier逻辑操作                                 │
-│     └── 是：触发升级（当前Tier → 下一Tier）                               │
+│  问题：                                                                  │
+│  ├── 竞态：100个并发进房同时检测到超阈值，重复触发100次升级               │
+│  ├── RTT：Tier2一次进房需要 SAdd+Incr+Get = 3次RTT（~3ms×3=9ms）       │
+│  ├── 不一致：SAdd成功但后续Incr失败 → 计数与Set不一致                    │
+│  └── 分布式锁开销：为解决竞态需额外引入分布式锁 → 又多1次RTT             │
 │                                                                         │
-│  ② 退房时检查降级                                                       │
-│     用户退房 → 在线数-1 → 检查：在线数 < 上一Tier上界 × 0.7？             │
-│     ├── 否：正常处理                                                    │
-│     └── 是：距离上次升级是否>60s？                                       │
-│            ├── 否：不降级（冷却期内）                                    │
-│            └── 是：触发降级（当前Tier → 上一Tier）                        │
+│  Lua脚本方案：                                                           │
+│  ├── 原子性：整个脚本在Redis单线程中原子执行，天然无竞态                   │
+│  ├── 1次RTT：EVALSHA一次网络往返完成全部操作                              │
+│  ├── 一致性：脚本内所有操作要么全成功要么全失败                            │
+│  └── 无需锁：串行执行消除并发问题                                        │
 │                                                                         │
-│  为什么降级阈值是上一级的70%而不是100%（防抖设计）：                       │
-│  ─────────────────────────────────────────────────                      │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Tier阈值配置（ETCD动态下发，Go启动时加载并传入Lua ARGV）：**
+
+```go
+// Tier阈值配置（ETCD动态下发，可热更新）
+var TierConfig = struct {
+    Tier1UpperBound  int     // 1000    — 超过此值升级到Tier2
+    Tier2UpperBound  int     // 10000   — 超过此值升级到Tier3
+    Tier3UpperBound  int     // 1000000 — 超过此值升级到Tier4
+    DowngradeRatio   float64 // 0.7     — 降到上一级阈值的70%才降级（防抖动）
+    UpgradeCooldown  int     // 60s     — 升级后60秒内不允许降级（防反复切换）
+}
+```
+
+**核心Lua脚本——进房操作（viewer_join.lua）：**
+
+一次 EVALSHA 原子完成：读取当前Tier → 按Tier执行数据操作 → 阈值判断 → 标记升级状态。
+
+```lua
+-- viewer_join.lua
+-- 进房核心逻辑：原子完成数据写入+Tier判断+升级标记
+--
+-- KEYS[1] = room:viewers:{room_id}        (Set - Tier1/2全量在线列表)
+-- KEYS[2] = room:online_count:{room_id}   (String - 独立计数器)
+-- KEYS[3] = room:tier:{room_id}           (Hash - Tier状态)
+-- KEYS[4] = room:vip_viewers:{room_id}    (ZSet - VIP观众子集)
+--
+-- ARGV[1] = user_id
+-- ARGV[2] = is_vip (0/1)
+-- ARGV[3] = user_weight (VIP权重，非VIP传0)
+-- ARGV[4] = tier1_upper (1000)
+-- ARGV[5] = tier2_upper (10000)
+-- ARGV[6] = tier3_upper (1000000)
+-- ARGV[7] = current_timestamp (秒级)
+
+-- 1. 读取当前Tier状态
+local tier_data = redis.call('HMGET', KEYS[3], 'current_tier', 'last_upgrade')
+local current_tier = tonumber(tier_data[1]) or 1  -- 默认Tier1（新房间）
+local last_upgrade = tonumber(tier_data[2]) or 0
+
+local user_id = ARGV[1]
+local is_vip = tonumber(ARGV[2])
+local user_weight = tonumber(ARGV[3])
+local count = 0
+local need_upgrade = 0  -- 0=不升级，>0=目标Tier
+
+-- 2. 按当前Tier执行对应数据操作
+if current_tier == 1 then
+    -- Tier1: 纯Set模式
+    local added = redis.call('SADD', KEYS[1], user_id)
+    if added == 0 then
+        -- 重复进房（已在线），直接返回
+        return cjson.encode({tier=1, count=redis.call('SCARD', KEYS[1]), upgrade=0, dup=1})
+    end
+    count = redis.call('SCARD', KEYS[1])
+    -- 检查升级阈值
+    if count > tonumber(ARGV[4]) then
+        need_upgrade = 2
+        -- 原子完成Tier1→Tier2的"快迁移"：创建独立计数器
+        redis.call('SET', KEYS[2], count)
+    end
+
+elseif current_tier == 2 then
+    -- Tier2: Set + 独立计数器
+    local added = redis.call('SADD', KEYS[1], user_id)
+    if added == 0 then
+        return cjson.encode({tier=2, count=redis.call('GET', KEYS[2]), upgrade=0, dup=1})
+    end
+    count = redis.call('INCR', KEYS[2])
+    if count > tonumber(ARGV[5]) then
+        need_upgrade = 3
+        -- 注意：Tier2→Tier3需要迁移VIP到ZSet + 删除大Set
+        -- 这些是"重操作"，只标记升级，由Go异步完成
+    end
+
+elseif current_tier == 3 then
+    -- Tier3: 计数器 + VIP ZSet（无全量Set）
+    count = redis.call('INCR', KEYS[2])
+    if is_vip == 1 then
+        redis.call('ZADD', KEYS[4], user_weight, user_id)
+    end
+    if count > tonumber(ARGV[6]) then
+        need_upgrade = 4
+    end
+
+else
+    -- Tier4: Redis侧仅维护计数器+VIP（主计数在Gateway本地）
+    count = redis.call('INCR', KEYS[2])
+    if is_vip == 1 then
+        redis.call('ZADD', KEYS[4], user_weight, user_id)
+    end
+end
+
+-- 3. 如果触发升级，原子更新Tier状态标记
+if need_upgrade > 0 then
+    redis.call('HSET', KEYS[3],
+        'current_tier', need_upgrade,
+        'last_upgrade', ARGV[7])
+end
+
+return cjson.encode({
+    tier = current_tier,      -- 进房时处于的Tier（非升级后的）
+    count = count,            -- 当前在线人数
+    upgrade = need_upgrade,   -- >0表示已升级到目标Tier，Go侧需异步迁移数据
+    dup = 0                   -- 非重复进房
+})
+```
+
+**退房Lua脚本（viewer_leave.lua）：**
+
+```lua
+-- viewer_leave.lua
+-- KEYS/ARGV 同 viewer_join.lua
+-- 额外 ARGV[8] = downgrade_ratio (0.7)
+-- 额外 ARGV[9] = upgrade_cooldown (60)
+
+local tier_data = redis.call('HMGET', KEYS[3], 'current_tier', 'last_upgrade')
+local current_tier = tonumber(tier_data[1]) or 1
+local last_upgrade = tonumber(tier_data[2]) or 0
+
+local user_id = ARGV[1]
+local now = tonumber(ARGV[7])
+local downgrade_ratio = tonumber(ARGV[8])
+local cooldown = tonumber(ARGV[9])
+local count = 0
+local need_downgrade = 0
+
+if current_tier == 1 then
+    redis.call('SREM', KEYS[1], user_id)
+    count = redis.call('SCARD', KEYS[1])
+    -- Tier1无降级空间
+
+elseif current_tier == 2 then
+    redis.call('SREM', KEYS[1], user_id)
+    count = redis.call('DECR', KEYS[2])
+    -- 降级条件：在线数 < Tier1阈值×0.7 且 冷却期已过
+    if count < tonumber(ARGV[4]) * downgrade_ratio and (now - last_upgrade) > cooldown then
+        need_downgrade = 1
+        -- Tier2→Tier1快降级：删除独立计数器即可（Set已有）
+        redis.call('DEL', KEYS[2])
+    end
+
+elseif current_tier == 3 then
+    count = redis.call('DECR', KEYS[2])
+    redis.call('ZREM', KEYS[4], user_id)  -- VIP退房时移除（非VIP ZREM不报错）
+    if count < tonumber(ARGV[5]) * downgrade_ratio and (now - last_upgrade) > cooldown then
+        need_downgrade = 2
+        -- Tier3→Tier2需要重建Set，标记降级由Go异步完成
+    end
+
+elseif current_tier == 4 then
+    count = redis.call('DECR', KEYS[2])
+    redis.call('ZREM', KEYS[4], user_id)
+    if count < tonumber(ARGV[6]) * downgrade_ratio and (now - last_upgrade) > cooldown then
+        need_downgrade = 3
+        -- Tier4→Tier3由Go异步完成
+    end
+end
+
+-- 更新Tier状态（仅对可在Lua内完成的快降级）
+if need_downgrade == 1 then
+    redis.call('HSET', KEYS[3], 'current_tier', 1, 'last_upgrade', now)
+end
+
+return cjson.encode({
+    tier = current_tier,
+    count = count,
+    downgrade = need_downgrade  -- >0表示需要降级，Go侧处理
+})
+```
+
+**防抖设计说明：**
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  为什么降级阈值是上一级的70%而不是100%（防抖设计）                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
 │  假设Tier1→Tier2阈值=1000人                                             │
 │  如果降级阈值也是1000人：                                                │
 │    在线数在999↔1001之间波动 → 每秒反复升级/降级 → 数据迁移风暴            │
 │  降级阈值=1000×0.7=700人：                                              │
 │    需要降到700人以下才降级 → 留出300人的缓冲区 → 避免抖动                 │
 │                                                                         │
-│  同理，60秒冷却期避免短时间内反复切换。                                    │
+│  同理，60秒冷却期（last_upgrade检查）避免短时间内反复切换。                │
+│  两者均在Lua脚本内原子判断，无竞态风险。                                  │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**升级过程（以Tier1→Tier2为例）数据迁移细节：**
+**Go应用层——Lua脚本加载与调用：**
 
 ```go
-// 在线观众服务核心代码
-func (s *OnlineService) onViewerJoin(roomID, userID int64) error {
-    tier := s.getCurrentTier(roomID) // Redis GET room:tier:{roomID}
-    
-    switch tier {
-    case Tier1:
-        // Tier1操作：SADD到Set + 计数
-        s.redis.SAdd(ctx, fmt.Sprintf("room:viewers:%d", roomID), userID)
-        count := s.redis.SCard(ctx, fmt.Sprintf("room:viewers:%d", roomID)).Val()
-        
-        // 检查是否需要升级到Tier2
-        if count > TierConfig.Tier1UpperBound {
-            go s.upgradeTier(roomID, Tier1, Tier2) // 异步升级，不阻塞进房
-        }
-        
-    case Tier2:
-        // Tier2操作：SADD到Set + INCR独立计数器
-        s.redis.SAdd(ctx, fmt.Sprintf("room:viewers:%d", roomID), userID)
-        count := s.redis.Incr(ctx, fmt.Sprintf("room:online_count:%d", roomID)).Val()
-        
-        if count > TierConfig.Tier2UpperBound {
-            go s.upgradeTier(roomID, Tier2, Tier3)
-        }
-        
-    case Tier3:
-        // Tier3操作：只INCR计数器 + 如果是VIP则加入VIP ZSet
-        s.redis.Incr(ctx, fmt.Sprintf("room:online_count:%d", roomID))
-        if s.isVIP(userID) {
-            weight := s.calcUserWeight(userID)
-            s.redis.ZAdd(ctx, fmt.Sprintf("room:vip_viewers:%d", roomID),
-                &redis.Z{Score: float64(weight), Member: userID})
-        }
-        // 不再维护全量Set（已在升级时删除）
-        
-    case Tier4:
-        // Tier4操作：什么都不写Redis，只通知Gateway本地计数
-        // Gateway节点本地 atomicAdd(roomLocalCount[roomID], 1)
-        // 汇总服务每3秒轮询所有Gateway聚合
+// 服务启动时：加载Lua脚本到Redis，获取SHA
+type OnlineService struct {
+    redis          *redis.Client
+    joinScriptSHA  string  // viewer_join.lua的SHA1
+    leaveScriptSHA string  // viewer_leave.lua的SHA1
+    mq             MQClient
+    grpcClient     GatewayClient
+}
+
+func NewOnlineService(rdb *redis.Client) *OnlineService {
+    s := &OnlineService{redis: rdb}
+    // SCRIPT LOAD 返回SHA1，后续用EVALSHA调用（省去每次传输脚本全文）
+    s.joinScriptSHA = rdb.ScriptLoad(ctx, viewerJoinLuaScript).Val()
+    s.leaveScriptSHA = rdb.ScriptLoad(ctx, viewerLeaveLuaScript).Val()
+    return s
+}
+
+// 进房——一次EVALSHA完成全部核心操作
+func (s *OnlineService) OnViewerJoin(roomID, userID int64) error {
+    isVIP, weight := s.getUserVIPInfo(userID)
+
+    result, err := s.redis.EvalSha(ctx, s.joinScriptSHA,
+        []string{
+            fmt.Sprintf("room:viewers:%d", roomID),
+            fmt.Sprintf("room:online_count:%d", roomID),
+            fmt.Sprintf("room:tier:%d", roomID),
+            fmt.Sprintf("room:vip_viewers:%d", roomID),
+        },
+        userID,                       // ARGV[1]
+        boolToInt(isVIP),             // ARGV[2]
+        weight,                       // ARGV[3]
+        TierConfig.Tier1UpperBound,   // ARGV[4]
+        TierConfig.Tier2UpperBound,   // ARGV[5]
+        TierConfig.Tier3UpperBound,   // ARGV[6]
+        time.Now().Unix(),            // ARGV[7]
+    ).Result()
+    if err != nil {
+        return fmt.Errorf("viewer join lua: %w", err)
     }
+
+    var resp struct {
+        Tier    int   `json:"tier"`
+        Count   int64 `json:"count"`
+        Upgrade int   `json:"upgrade"`
+        Dup     int   `json:"dup"`
+    }
+    json.Unmarshal([]byte(result.(string)), &resp)
+
+    if resp.Dup == 1 {
+        return nil // 重复进房，跳过
+    }
+
+    // Lua已原子完成Tier标记变更，Go只负责Lua做不了的"慢路径"异步操作
+    if resp.Upgrade > 0 {
+        go s.asyncMigrateOnUpgrade(roomID, resp.Tier, resp.Upgrade)
+    }
+
     return nil
 }
 
-// 升级过程（异步执行，对进房用户透明）
-func (s *OnlineService) upgradeTier(roomID int64, from, to int) {
-    // 1. 加分布式锁（防止并发升级）
-    lock := s.redis.SetNX(ctx, fmt.Sprintf("room:tier_lock:%d", roomID), 1, 30*time.Second)
-    if !lock.Val() {
-        return // 其他实例正在升级，跳过
+// 退房——同理一次EVALSHA
+func (s *OnlineService) OnViewerLeave(roomID, userID int64) error {
+    isVIP, weight := s.getUserVIPInfo(userID)
+
+    result, err := s.redis.EvalSha(ctx, s.leaveScriptSHA,
+        []string{
+            fmt.Sprintf("room:viewers:%d", roomID),
+            fmt.Sprintf("room:online_count:%d", roomID),
+            fmt.Sprintf("room:tier:%d", roomID),
+            fmt.Sprintf("room:vip_viewers:%d", roomID),
+        },
+        userID, boolToInt(isVIP), weight,
+        TierConfig.Tier1UpperBound,
+        TierConfig.Tier2UpperBound,
+        TierConfig.Tier3UpperBound,
+        time.Now().Unix(),
+        TierConfig.DowngradeRatio,
+        TierConfig.UpgradeCooldown,
+    ).Result()
+    if err != nil {
+        return fmt.Errorf("viewer leave lua: %w", err)
     }
-    defer s.redis.Del(ctx, fmt.Sprintf("room:tier_lock:%d", roomID))
-    
-    // 2. 再次确认需要升级（double check）
-    count := s.getOnlineCount(roomID)
-    if count <= s.getUpperBound(from) {
-        return // 已经不满足升级条件（可能有人退房了）
+
+    var resp struct {
+        Tier      int   `json:"tier"`
+        Count     int64 `json:"count"`
+        Downgrade int   `json:"downgrade"`
     }
-    
-    // 3. 执行数据迁移
+    json.Unmarshal([]byte(result.(string)), &resp)
+
+    if resp.Downgrade > 0 {
+        go s.asyncMigrateOnDowngrade(roomID, resp.Tier, resp.Downgrade)
+    }
+
+    return nil
+}
+```
+
+**Go异步迁移——只处理Lua脚本做不了的"重操作"：**
+
+```go
+// 升级迁移（Lua已完成Tier标记变更，这里只做数据迁移）
+func (s *OnlineService) asyncMigrateOnUpgrade(roomID int64, fromTier, toTier int) {
     switch {
-    case from == Tier1 && to == Tier2:
-        // Tier1→Tier2：Set保留不动，额外创建独立计数器
-        count := s.redis.SCard(ctx, fmt.Sprintf("room:viewers:%d", roomID)).Val()
-        s.redis.Set(ctx, fmt.Sprintf("room:online_count:%d", roomID), count, 0)
-        // Set继续用于在线列表，计数器用于快速读取人数
+    case fromTier == 1 && toTier == 2:
+        // Tier1→Tier2：Lua脚本已原子完成（创建计数器），无需额外操作
+        // 此处仅广播Tier变更事件
         
-    case from == Tier2 && to == Tier3:
-        // Tier2→Tier3：删除全量Set（太大了），只保留计数器+VIP ZSet
-        // 先把当前Set中的VIP用户迁移到ZSet
-        members := s.redis.SMembers(ctx, fmt.Sprintf("room:viewers:%d", roomID)).Val()
-        for _, uid := range members {
-            userID, _ := strconv.ParseInt(uid, 10, 64)
-            if s.isVIP(userID) || s.isAdmin(roomID, userID) {
-                weight := s.calcUserWeight(userID)
-                s.redis.ZAdd(ctx, fmt.Sprintf("room:vip_viewers:%d", roomID),
-                    &redis.Z{Score: float64(weight), Member: userID})
+    case fromTier == 2 && toTier == 3:
+        // Tier2→Tier3：需要迁移VIP到ZSet + 删除全量Set
+        // 用SSCAN分批迭代（避免SMEMBERS阻塞Redis）
+        var cursor uint64
+        for {
+            members, nextCursor, err := s.redis.SScan(ctx,
+                fmt.Sprintf("room:viewers:%d", roomID), cursor, "", 500).Result()
+            if err != nil {
+                break
+            }
+            // 筛选VIP用户加入ZSet
+            pipe := s.redis.Pipeline()
+            for _, uid := range members {
+                userID, _ := strconv.ParseInt(uid, 10, 64)
+                if s.isVIP(userID) || s.isAdmin(roomID, userID) {
+                    weight := s.calcUserWeight(userID)
+                    pipe.ZAdd(ctx, fmt.Sprintf("room:vip_viewers:%d", roomID),
+                        &redis.Z{Score: float64(weight), Member: userID})
+                }
+            }
+            pipe.Exec(ctx)
+            
+            cursor = nextCursor
+            if cursor == 0 {
+                break
             }
         }
-        // 删除全量Set（异步，分批删除避免阻塞Redis）
-        go s.asyncDeleteLargeSet(fmt.Sprintf("room:viewers:%d", roomID))
-        
-    case from == Tier3 && to == Tier4:
-        // Tier3→Tier4：通知所有Gateway节点开启本地计数模式
+        // 分批删除大Set（UNLINK异步删除，不阻塞Redis主线程）
+        s.redis.Unlink(ctx, fmt.Sprintf("room:viewers:%d", roomID))
+
+    case fromTier == 3 && toTier == 4:
+        // Tier3→Tier4：通知所有Gateway开启本地计数模式
         s.broadcastToGateways(roomID, "enable_local_count")
-        // 计数器保留作为汇总写入目标
+        // 将房间加入Tier4集合（汇总服务扫描用）
+        s.redis.SAdd(ctx, "rooms:tier4", roomID)
     }
-    
-    // 4. 更新Tier状态
-    s.redis.HSet(ctx, fmt.Sprintf("room:tier:%d", roomID),
-        "current_tier", to,
-        "last_upgrade", time.Now().Unix(),
-    )
-    
-    // 5. 广播Tier变更事件（通知Gateway调整广播策略）
+
+    // 广播Tier变更事件（通知Gateway调整广播策略）
     s.mq.Send("topic_room_signal", &TierChangedEvent{
         RoomID:  roomID,
-        OldTier: from,
-        NewTier: to,
+        OldTier: fromTier,
+        NewTier: toTier,
+    })
+}
+
+// 降级迁移
+func (s *OnlineService) asyncMigrateOnDowngrade(roomID int64, fromTier, downgradeTarget int) {
+    switch {
+    case fromTier == 2 && downgradeTarget == 1:
+        // Tier2→Tier1：Lua已完成（删除计数器），无需额外操作
+
+    case fromTier == 3 && downgradeTarget == 2:
+        // Tier3→Tier2：需要重建全量Set
+        // 从所有Gateway收集当前在线用户列表
+        gateways := s.redis.SMembers(ctx, fmt.Sprintf("room:gateways:%d", roomID)).Val()
+        
+        pipe := s.redis.Pipeline()
+        for _, gw := range gateways {
+            users := s.grpcClient.GetRoomUsers(gw, roomID)
+            // 批量写入Set
+            if len(users) > 0 {
+                members := make([]interface{}, len(users))
+                for i, uid := range users {
+                    members[i] = uid
+                }
+                pipe.SAdd(ctx, fmt.Sprintf("room:viewers:%d", roomID), members...)
+            }
+        }
+        pipe.Exec(ctx)
+        
+        // 更新计数器为精确值
+        count := s.redis.SCard(ctx, fmt.Sprintf("room:viewers:%d", roomID)).Val()
+        s.redis.Set(ctx, fmt.Sprintf("room:online_count:%d", roomID), count, 0)
+        
+        // 数据重建完成后，原子更新Tier状态（降级是"先重建数据再切状态"）
+        s.redis.HSet(ctx, fmt.Sprintf("room:tier:%d", roomID),
+            "current_tier", 2,
+            "last_upgrade", time.Now().Unix())
+
+    case fromTier == 4 && downgradeTarget == 3:
+        // Tier4→Tier3：通知Gateway关闭本地计数模式
+        s.broadcastToGateways(roomID, "disable_local_count")
+        s.redis.SRem(ctx, "rooms:tier4", roomID)
+        // 更新Tier状态
+        s.redis.HSet(ctx, fmt.Sprintf("room:tier:%d", roomID),
+            "current_tier", 3,
+            "last_upgrade", time.Now().Unix())
+    }
+
+    s.mq.Send("topic_room_signal", &TierChangedEvent{
+        RoomID:  roomID,
+        OldTier: fromTier,
+        NewTier: downgradeTarget,
     })
 }
 ```
 
-**降级过程（以Tier3→Tier2为例）数据重建：**
-
-```go
-func (s *OnlineService) downgradeTier(roomID int64, from, to int) {
-    // 加锁 + double check（同升级）
-    // ...
-    
-    switch {
-    case from == Tier3 && to == Tier2:
-        // Tier3→Tier2：需要重建全量Set
-        // 方案：从所有Gateway节点收集当前该房间的在线用户列表
-        
-        // 1. 向所有持有该房间连接的Gateway请求在线用户列表
-        gateways := s.redis.SMembers(ctx, fmt.Sprintf("room:gateways:%d", roomID)).Val()
-        allUsers := make([]int64, 0, 10000)
-        for _, gw := range gateways {
-            users := s.grpcClient.GetRoomUsers(gw, roomID) // Gateway返回本机该房间连接用户
-            allUsers = append(allUsers, users...)
-        }
-        
-        // 2. 批量写入Redis Set（pipeline批量，每批1000个）
-        pipe := s.redis.Pipeline()
-        for i := 0; i < len(allUsers); i += 1000 {
-            batch := allUsers[i:min(i+1000, len(allUsers))]
-            members := make([]interface{}, len(batch))
-            for j, uid := range batch {
-                members[j] = uid
-            }
-            pipe.SAdd(ctx, fmt.Sprintf("room:viewers:%d", roomID), members...)
-        }
-        pipe.Exec(ctx)
-        
-        // 3. 更新计数器为精确值
-        s.redis.Set(ctx, fmt.Sprintf("room:online_count:%d", roomID), len(allUsers), 0)
-        
-    case from == Tier4 && to == Tier3:
-        // Tier4→Tier3：通知Gateway关闭本地计数模式，恢复Redis INCR
-        s.broadcastToGateways(roomID, "disable_local_count")
-        // 用最后一次汇总值初始化计数器（已有）
-        
-    case from == Tier2 && to == Tier1:
-        // Tier2→Tier1：删除独立计数器，回归纯Set模式
-        s.redis.Del(ctx, fmt.Sprintf("room:online_count:%d", roomID))
-        // Set已有，无需迁移
-    }
-    
-    // 更新Tier + 广播（同升级）
-}
-```
-
-**Gateway节点如何感知Tier变更并调整行为：**
+**Gateway节点感知Tier变更并调整行为（不变，仍由Go处理）：**
 
 ```go
 // Gateway收到Tier变更事件后调整广播策略
 func (g *Gateway) onTierChanged(event *TierChangedEvent) {
-    roomID := event.RoomID
-    newTier := event.NewTier
-    
-    // 更新本地缓存的房间Tier
-    g.roomTierCache.Store(roomID, newTier)
+    g.roomTierCache.Store(event.RoomID, event.NewTier)
 }
 
 // 用户进房时，根据当前Tier决定是否广播欢迎消息
@@ -1703,8 +1923,7 @@ func (g *Gateway) broadcastWelcome(roomID, userID int64) {
         g.sendToConns(conns, &WelcomeMsg{UserID: userID, Type: "vip_only"})
         
     case Tier3, Tier4:
-        // 不广播普通用户欢迎消息
-        // 仅当进房用户是VIP/守护时广播
+        // 不广播普通用户欢迎消息，仅VIP/守护入场
         if g.isHighValueUser(userID) {
             g.broadcastToRoom(roomID, &VIPEnterMsg{UserID: userID})
         }
@@ -1713,7 +1932,6 @@ func (g *Gateway) broadcastWelcome(roomID, userID int64) {
 
 // Tier4模式下Gateway本地计数
 func (g *Gateway) onTier4Join(roomID int64) {
-    // 原子递增本地计数器
     atomic.AddInt64(&g.localRoomCount[roomID], 1)
 }
 
@@ -1727,21 +1945,17 @@ func (g *Gateway) GetLocalRoomCount(roomID int64) int64 {
 }
 ```
 
-**Tier4汇总服务实现：**
+**Tier4汇总服务（独立定时任务，每3秒执行）：**
 
 ```go
-// 独立的汇总服务（定时任务，每3秒执行一次）
 func (a *AggregatorService) aggregateTier4Rooms() {
-    // 1. 获取所有Tier4房间列表
     tier4Rooms := a.redis.SMembers(ctx, "rooms:tier4").Val()
     
     for _, roomIDStr := range tier4Rooms {
         roomID, _ := strconv.ParseInt(roomIDStr, 10, 64)
-        
-        // 2. 获取该房间分布在哪些Gateway节点
         gateways := a.redis.SMembers(ctx, fmt.Sprintf("room:gateways:%d", roomID)).Val()
         
-        // 3. 并发请求每个Gateway的本地计数
+        // 并发请求每个Gateway的本地计数
         var totalCount int64
         var wg sync.WaitGroup
         var mu sync.Mutex
@@ -1761,57 +1975,73 @@ func (a *AggregatorService) aggregateTier4Rooms() {
         }
         wg.Wait()
         
-        // 4. 写入Redis计数器（作为对外展示数据源）
+        // 写入Redis计数器（对外展示数据源）
         a.redis.Set(ctx, fmt.Sprintf("room:online_count:%d", roomID), totalCount, 0)
         
-        // 5. 检查是否需要降级（人数降到100万×0.7=70万以下）
+        // 检查是否需要降级（人数降到100万×0.7=70万以下）
         if totalCount < int64(float64(TierConfig.Tier3UpperBound)*TierConfig.DowngradeRatio) {
-            go a.onlineService.downgradeTier(roomID, Tier4, Tier3)
+            go a.onlineService.asyncMigrateOnDowngrade(roomID, 4, 3)
         }
     }
 }
 ```
 
-**切换过程的一致性保证：**
+**切换过程的一致性保证（Lua原子性大幅简化）：**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  问：升级过程中（如Tier2→Tier3），如果有人同时在进房，会不会数据不一致？   │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  答：通过"先切状态，再迁移数据"+ "兼容期双写"保证。                       │
+│  答：Lua脚本原子性 + "先切状态再迁移数据" 双重保证。                      │
+│                                                                         │
+│  核心优势：Tier状态标记变更在Lua脚本内原子完成                            │
+│  ──────────────────────────────────────────────                         │
+│  旧方案：Go侧 加分布式锁→double check→写状态 存在窗口期                  │
+│  新方案：Lua脚本检测到超阈值时，直接 HSET current_tier = new_tier        │
+│          单线程原子执行，不可能有两个请求同时修改 → 无需分布式锁           │
 │                                                                         │
 │  升级时序（Tier2→Tier3）：                                               │
 │  ─────────────────────────                                              │
-│  t=0:  当前Tier=2，在线数超过10000，触发升级                              │
-│  t=1:  加分布式锁，double check确认需要升级                               │
-│  t=2:  先把Tier状态写为3（此刻起新进房按Tier3逻辑处理）                    │
-│  t=3:  开始迁移VIP数据到ZSet（异步，可能耗时数百ms）                       │
-│  t=4:  迁移完成，异步删除旧的全量Set                                     │
+│  t=0:  Lua脚本检测到 INCR后count > 10000                                │
+│  t=0:  同一脚本内原子将 current_tier 写为 3（此刻起所有新进房按Tier3处理）│
+│  t=0:  Lua返回 upgrade=3，Go收到后启动异步迁移                           │
+│  t=1:  Go异步：SSCAN遍历旧Set，将VIP迁移到ZSet                          │
+│  t=2:  Go异步：UNLINK删除旧Set                                          │
 │                                                                         │
-│  t=2~t=4之间如果有进房：                                                 │
-│  - 新进房用户读到Tier=3 → 按Tier3逻辑：INCR计数器 + VIP写ZSet            │
-│  - 不再写旧的Set → 旧Set只会越来越小（退房仍执行SREM，不报错即可）        │
-│  - 计数器是从Set.SCARD初始化的，之后用INCR/DECR维护，不丢数              │
+│  t=0后如果有进房（Lua脚本级别的"后续请求"）：                             │
+│  - 读到 current_tier=3 → 按Tier3逻辑：INCR计数器 + VIP写ZSet            │
+│  - 不再写旧的Set → Set删除不影响新请求                                   │
+│  - 计数器从Lua脚本设置的精确值开始 INCR → 不丢数                          │
 │                                                                         │
-│  降级时序（Tier3→Tier2）：                                               │
+│  降级时序（Tier3→Tier2，需要重建Set，不能在Lua内完成）：                   │
 │  ─────────────────────────                                              │
-│  t=0:  当前Tier=3，在线数降到7000以下，触发降级                           │
-│  t=1:  加锁，从所有Gateway收集当前在线用户列表                            │
-│  t=2:  批量写入Redis Set（重建全量列表）                                  │
-│  t=3:  把Tier状态写为2（此刻起新进房按Tier2逻辑处理）                     │
+│  t=0:  Lua脚本检测到降级条件满足，返回 downgrade=2                       │
+│  t=1:  Go异步：从Gateway收集在线用户 → 批量写入Set                       │
+│  t=2:  Go异步：Set重建完成后，原子 HSET current_tier=2                   │
+│        （降级是"先重建数据再切状态"，与升级相反）                          │
 │                                                                         │
-│  为什么降级是"先重建数据，再切状态"（与升级相反）：                        │
-│  - 升级可以先切状态：Tier3不需要Set，切了状态后新请求不写Set即可            │
-│  - 降级必须先有数据：Tier2需要Set，如果先切状态，瞬间新请求写Set           │
-│    但Set还没重建完 → Set不完整 → 所以必须先重建完再切状态                 │
-│                                                                         │
-│  t=1~t=3之间如果有进房：                                                 │
-│  - 仍按Tier3逻辑处理（INCR计数器 + VIP写ZSet）                           │
-│  - Set重建可能漏掉这些新用户 → 重建完成后做一次差值补偿：                  │
-│    补偿 = 重建期间Gateway上报的新增用户列表 → 追加SADD                    │
+│  t=0~t=2之间如果有进房：                                                 │
+│  - Lua读到current_tier仍=3 → 按Tier3逻辑处理（INCR+VIP ZSet）           │
+│  - t=2之后新请求才按Tier2逻辑 → Set可能漏掉这些用户                      │
+│  - 补偿：切状态后执行一次增量补偿（Gateway上报的最近增量用户SADD到Set）    │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Lua脚本 vs Go应用层职责划分：**
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  适合放Lua脚本（快路径，原子执行）     │  适合放Go应用层（慢路径，异步）  │
+├────────────────────────────────────────┼────────────────────────────────┤
+│  ✓ 读取/更新Tier状态标记               │  ✓ 调用外部服务（gRPC/HTTP）    │
+│  ✓ SADD/SREM/INCR/DECR 数据操作       │  ✓ 大数据量迁移（SSCAN遍历）   │
+│  ✓ 阈值判断（升级/降级条件）            │  ✓ 广播消息到MQ                │
+│  ✓ 去重判断（SADD返回0=重复进房）       │  ✓ 通知Gateway变更             │
+│  ✓ VIP ZSet维护（ZADD/ZREM）           │  ✓ UNLINK删除大Set             │
+│  ✓ 冷却期判断（last_upgrade检查）       │  ✓ 降级时重建Set               │
+└────────────────────────────────────────┴────────────────────────────────┘
 ```
 
 **Redis Key总览（各Tier使用的数据结构）：**
