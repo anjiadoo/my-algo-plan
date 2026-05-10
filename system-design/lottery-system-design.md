@@ -1,5 +1,5 @@
 # 互娱场景通用抽奖系统设计
-> 基于 LotteryTemplate 插件化架构，支持有放回/无放回抽奖、分层奖池、里程碑保底、多维度道具过滤、连抽、概率缩放、异步发货、A/B 实验等能力，适用于腾讯游戏旗下多款游戏的各类抽奖活动场景。
+> 互娱场景通用抽奖系统，采用插件化架构，支持有放回/无放回抽奖、分层奖池、里程碑保底、多维度道具过滤、连抽、概率缩放、异步发货、A/B 实验等能力，适用于腾讯游戏旗下多款游戏的各类抽奖活动场景。
 
 ---
 
@@ -120,7 +120,7 @@
 
 ### 实体 + 事件
 
-#### 实体（Entity，写模型）
+**实体（Entity，写模型）**
 
 | 模型 | 职责 | 核心属性 | 存储位置 |
 |------|------|---------|---------|
@@ -130,7 +130,7 @@
 | **Inventory** 限量库存 | 限量道具的全局库存管控 | 奖池ID、道具ID、总库存、已发放、Redis 实时值 | Redis 原子计数（权威）+ MySQL 对账兜底 |
 | **DeliveryRecord** 发货记录 | 道具发放追踪 | 发货ID、抽奖ID、用户ID、道具ID、渠道、状态、重试次数 | MySQL |
 
-#### 事件（Event，事件流）
+**事件（Event，事件流）**
 
 | 事件 | 触发时机 | 下游消费 |
 |------|---------|---------|
@@ -140,30 +140,197 @@
 | **MilestoneHit** 里程碑命中 | 幸运值达到阈值 | ① 日志记录 ② 保底统计 |
 | **StockDepleted** 库存耗尽 | Redis 库存 ≤ 0 | ① 运营告警 ② 自动切换兜底道具 |
 
-#### 模型关系图
+**模型关系图**
 
 ```
   [写路径（抽奖核心）]              [事件流]                    [读路径]
   ┌──────────────────┐                                    ┌──────────────────┐
   │ UserLotteryState │──DrawCompleted─────┐               │   DrawRecord     │ ← 抽奖流水
   │ (Redis 状态机)    │                    │               │  (MySQL 按月分表) │
-  │ ├─ 幸运值/保底   │                    │               └──────────────────┘
-  │ ├─ 已抽道具      │                    │               ┌──────────────────┐
-  │ └─ 奖池道具集合  │                    ├─RocketMQ──→  │  DeliveryRecord  │ ← 发货记录
+  │ ├─ 幸运值/保底     │                    │              └───────────────────┘
+  │ ├─ 已抽道具       │                    │               ┌──────────────────┐
+  │ └─ 奖池道具集合    │                    ├─ RocketMQ──→  │  DeliveryRecord  │ ← 发货记录
   └──────────────────┘                    │               └──────────────────┘
          │                                │               ┌──────────────────┐
-         │ 库存扣减                        │               │  到账通知/广播   │
+         │ 库存扣减                        │                │  到账通知/广播    │
          ▼                                │               └──────────────────┘
   ┌──────────────────┐                    │
   │   Inventory      │──StockDepleted─────┘
   │ (Redis 原子计数)  │
-  │ MySQL 对账兜底   │
+  │ MySQL 对账兜底    │
   └──────────────────┘
 
   ┌──────────────────┐
   │  LotteryPool     │ ← 运营后台配置，热加载到 Redis
   │ (MySQL + Redis)  │
   └──────────────────┘
+```
+
+**设计原则：**
+- **写路径极简**：抽奖核心只有"Redis 读状态 + Lua 扣库存 + Redis 写状态 + 事务消息"，不同步写 DB
+- **事件必然对应记录**：每次抽奖成功事件必落 DrawRecord + DeliveryRecord，通过事务消息保证不丢
+- **Redis 权威 + MySQL 兜底**：用户状态/限量库存热路径靠 Redis（50万 QPS），MySQL 只做持久化兜底（对账/恢复）
+- **幂等最终兜底**：DeliveryRecord 的 `uk_draw_item(draw_id, item_index)` 唯一索引是"一次抽奖一个道具只发一次"的最终防线
+
+### 完整库表设计
+
+```sql
+-- =====================================================
+-- 奖池配置表（单库，读多写少，运营后台管理）
+-- =====================================================
+CREATE TABLE t_pool_config (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    pool_id     VARCHAR(64) NOT NULL  COMMENT '奖池唯一标识',
+    version     INT NOT NULL DEFAULT 1 COMMENT '配置版本号，每次修改+1',
+    pool_name   VARCHAR(128) NOT NULL,
+    pool_type   VARCHAR(32) NOT NULL  COMMENT 'layered/static/dynamic/collection',
+    game_id     VARCHAR(32) NOT NULL  COMMENT '所属游戏ID',
+    config_json JSON NOT NULL         COMMENT '完整奖池配置（层级/道具/概率组/里程碑/过滤规则）',
+    status      TINYINT NOT NULL DEFAULT 0 COMMENT '0草稿 1审核中 2生效 3下线',
+    start_time  DATETIME NOT NULL,
+    end_time    DATETIME NOT NULL,
+    created_by  VARCHAR(64) NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_pool_version (pool_id, version),
+    KEY idx_game_status (game_id, status),
+    KEY idx_status_time (status, start_time, end_time) COMMENT '活动时间查询索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='奖池配置表';
+
+
+-- =====================================================
+-- 抽奖记录表（按 user_id % 16 分16库，按月分表）
+-- 核心：记录每一次抽奖的完整快照，用于审计/查询/对账
+-- =====================================================
+CREATE TABLE t_draw_record_202401 (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    draw_id         VARCHAR(64) NOT NULL  COMMENT '雪花ID，全局唯一',
+    batch_id        VARCHAR(64) NOT NULL  COMMENT '连抽批次ID，同一次N连抽共享',
+    user_id         BIGINT UNSIGNED NOT NULL,
+    game_id         VARCHAR(32) NOT NULL,
+    pool_id         VARCHAR(64) NOT NULL,
+    pool_version    INT NOT NULL          COMMENT '抽奖时的奖池版本（可追溯配置）',
+    draw_index      SMALLINT NOT NULL     COMMENT '连抽中的序号 0~N-1',
+    draw_count      SMALLINT NOT NULL     COMMENT '本批次连抽总数',
+    item_id         VARCHAR(64) NOT NULL,
+    item_name       VARCHAR(128) NOT NULL,
+    rarity          VARCHAR(16) NOT NULL  COMMENT 'SSR/SR/R/N',
+    prob_id         VARCHAR(64) NOT NULL  COMMENT '使用的概率组ID',
+    is_pity         TINYINT NOT NULL DEFAULT 0 COMMENT '是否保底触发 0否 1是',
+    is_up           TINYINT NOT NULL DEFAULT 0 COMMENT '是否UP道具',
+    cost_type       VARCHAR(32) NOT NULL  COMMENT '消耗类型：diamond/ticket/coin',
+    cost_amount     INT NOT NULL          COMMENT '消耗数量（整数）',
+    pity_counter    INT NOT NULL DEFAULT 0 COMMENT '抽奖前的保底计数（用于分析）',
+    draw_time       DATETIME(3) NOT NULL,
+    extra_info      JSON                  COMMENT '扩展信息（AB分组/客户端版本等）',
+    UNIQUE KEY uk_draw_id (draw_id),
+    KEY idx_user_time (user_id, draw_time),
+    KEY idx_pool_time (pool_id, draw_time),
+    KEY idx_batch (batch_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抽奖记录表（按月分表）';
+
+
+-- =====================================================
+-- 发货记录表（按 draw_id % 16 分16库）
+-- 核心：uk_draw_item 联合唯一索引是防重复发货的数据库最终兜底
+-- =====================================================
+CREATE TABLE t_delivery_record (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    delivery_id     VARCHAR(64) NOT NULL  COMMENT '发货单雪花ID',
+    draw_id         VARCHAR(64) NOT NULL  COMMENT '关联抽奖记录ID',
+    item_index      SMALLINT NOT NULL     COMMENT '连抽中的道具序号',
+    user_id         BIGINT UNSIGNED NOT NULL,
+    item_id         VARCHAR(64) NOT NULL,
+    item_type       VARCHAR(32) NOT NULL  COMMENT 'character/skin/currency/coupon/physical',
+    channel         VARCHAR(32) NOT NULL  COMMENT '发货渠道：game_server_rpc/wallet/coupon_center',
+    status          TINYINT NOT NULL DEFAULT 0
+                    COMMENT '0待发 1发送中 2成功 3失败 4补偿中 5补偿成功',
+    retry_count     TINYINT NOT NULL DEFAULT 0,
+    channel_order_id VARCHAR(128)         COMMENT '渠道方返回的单号（对账用）',
+    error_msg       VARCHAR(512),
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_draw_item (draw_id, item_index) COMMENT '幂等唯一索引（防重复发货最终兜底）',
+    KEY idx_user_status (user_id, status),
+    KEY idx_status_time (status, updated_at) COMMENT '发货Worker重试/补偿扫描索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='发货记录表';
+
+
+-- =====================================================
+-- 库存表（单库，限量道具不多，写入量可控）
+-- Redis 原子计数为实时权威，此表为对账基准+恢复来源
+-- =====================================================
+CREATE TABLE t_inventory (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    pool_id     VARCHAR(64) NOT NULL,
+    item_id     VARCHAR(64) NOT NULL,
+    total_stock INT NOT NULL DEFAULT -1  COMMENT '-1表示无限库存',
+    used_stock  INT NOT NULL DEFAULT 0   COMMENT '已发放数量（异步更新，对账用）',
+    frozen_stock INT NOT NULL DEFAULT 0  COMMENT '冻结中数量（发货中未确认）',
+    version     INT NOT NULL DEFAULT 0   COMMENT '乐观锁（DB降级模式用）',
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_pool_item (pool_id, item_id),
+    KEY idx_pool_id (pool_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='限量库存表';
+
+
+-- =====================================================
+-- 用户状态持久化表（按 user_id % 16 分库）
+-- 异步落盘：每次抽奖后MQ异步写入，Redis宕机时恢复用
+-- =====================================================
+CREATE TABLE t_user_state (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id     BIGINT UNSIGNED NOT NULL,
+    game_id     VARCHAR(32) NOT NULL,
+    pool_type   VARCHAR(32) NOT NULL     COMMENT '按池类型隔离（跨池保底继承）',
+    layer       VARCHAR(16) NOT NULL DEFAULT '' COMMENT 'Layer层级标识',
+    state_json  MEDIUMTEXT NOT NULL       COMMENT 'UserRealTimeState JSON（可选zlib压缩）',
+    version     INT NOT NULL DEFAULT 0   COMMENT '状态版本号（每次更新+1）',
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_pool_layer (user_id, game_id, pool_type, layer),
+    KEY idx_user_game (user_id, game_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户抽奖状态持久化表（Redis兜底）';
+
+
+-- =====================================================
+-- 发货事务补偿表（幂等 + MQ 回查兜底）
+-- 类比红包系统的 send_transaction，用于 RocketMQ 事务回查
+-- =====================================================
+CREATE TABLE t_draw_transaction (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    draw_id         VARCHAR(64) NOT NULL  COMMENT '抽奖ID = 事务消息的唯一标识',
+    batch_id        VARCHAR(64) NOT NULL,
+    user_id         BIGINT UNSIGNED NOT NULL,
+    pool_id         VARCHAR(64) NOT NULL,
+    draw_count      SMALLINT NOT NULL     COMMENT '本次连抽次数',
+    cost_type       VARCHAR(32) NOT NULL,
+    cost_amount     INT NOT NULL          COMMENT '总消耗金额',
+    status          TINYINT NOT NULL DEFAULT 0
+                    COMMENT '0处理中(半消息已发) 1已提交(本地事务成功) 2已回滚(本地事务失败)',
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_draw_id (draw_id) COMMENT '事务回查时按此字段定位',
+    KEY idx_status_create (status, created_at) COMMENT '定时补偿任务扫描（status=0超时未确认的）'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抽奖事务补偿表（RocketMQ回查用）';
+
+
+-- =====================================================
+-- 日级对账任务表（兜底）
+-- =====================================================
+CREATE TABLE t_reconciliation_task (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    task_date       DATE NOT NULL         COMMENT '对账日期',
+    pool_id         VARCHAR(64) NOT NULL,
+    item_id         VARCHAR(64) NOT NULL,
+    redis_stock     INT NOT NULL          COMMENT '对账时Redis库存值',
+    mysql_used      INT NOT NULL          COMMENT 'MySQL统计已发放数',
+    expected_remain INT NOT NULL          COMMENT '预期剩余 = total - mysql_used',
+    diff            INT NOT NULL          COMMENT '差异 = redis_stock - expected_remain',
+    status          TINYINT NOT NULL DEFAULT 0 COMMENT '0待处理 1已修正 2已忽略 3人工处理',
+    fix_action      VARCHAR(256)          COMMENT '修正动作描述',
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_date_pool_item (task_date, pool_id, item_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存对账任务表';
 ```
 
 ---
@@ -181,7 +348,7 @@
 ┌───────▼──────────────▼──────────────▼─────────────────▼─────────────┐
 │                   网关层 (tRPC-Gateway)                               │
 │  ┌────────┐ ┌──────────┐ ┌────────────┐ ┌──────────┐ ┌──────────┐  │
-│  │限流熔断 │ │身份认证   │ │参数校验     │ │灰度路由   │ │协议转换   │  │
+│  │限流熔断 │ │身份认证    │ │参数校验     │ │灰度路由   │  │协议转换   │  │
 │  └────────┘ └──────────┘ └────────────┘ └──────────┘ └──────────┘  │
 └─────────────────────────────┬───────────────────────────────────────┘
                               │
@@ -201,17 +368,17 @@
 ┌─────────────────────────────▼───────────────────────────────────────┐
 │                        中间件层                                       │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ Redis Cluster │  │  RocketMQ    │  │    ETCD      │              │
-│  │ 32分片1主2从  │  │ 16主16从     │  │  配置中心    │              │
+│  │ Redis Cluster│  │  RocketMQ    │  │    ETCD      │              │
+│  │ 32分片1主2从  │   │ 16主16从     │  │  配置中心     │              │
 │  └──────────────┘  └──────────────┘  └──────────────┘              │
 └─────────────────────────────┬───────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼───────────────────────────────────────┐
 │                        存储层                                         │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐              │
-│  │MySQL 16库 │ │ ES 日志  │ │Prometheus│ │  HDFS    │              │
-│  │按月分表   │ │ 审计查询 │ │+ Grafana │ │ 冷数据   │              │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘              │
+│  ┌──────────┐  ┌──────────┐ ┌──────────┐ ┌──────────┐              │
+│  │MySQL 16库 │ │ ES 日志   │ │Prometheus│ │  HDFS    │              │
+│  │按月分表   │  │ 审计查询   │ │+ Grafana │ │ 冷数据   │              │
+│  └──────────┘  └──────────┘ └──────────┘ └──────────┘              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1014,107 +1181,7 @@ compliance:
 
 ---
 
-## 17. 数据库设计
-
-```sql
--- 奖池配置表
-CREATE TABLE t_pool_config (
-    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    pool_id     VARCHAR(64) NOT NULL,
-    version     INT NOT NULL DEFAULT 1,
-    pool_name   VARCHAR(128) NOT NULL,
-    pool_type   VARCHAR(32) NOT NULL,
-    game_id     VARCHAR(32) NOT NULL,
-    config_json JSON NOT NULL COMMENT '完整奖池配置',
-    status      TINYINT NOT NULL DEFAULT 0 COMMENT '0草稿 1审核中 2生效 3下线',
-    start_time  DATETIME NOT NULL,
-    end_time    DATETIME NOT NULL,
-    created_by  VARCHAR(64) NOT NULL,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_pool_version (pool_id, version),
-    KEY idx_game_status (game_id, status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-
--- 抽奖记录表（按月分表，按 user_id % 16 分库）
-CREATE TABLE t_draw_record_202401 (
-    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    draw_id         VARCHAR(64) NOT NULL COMMENT '雪花ID',
-    batch_id        VARCHAR(64) NOT NULL COMMENT '连抽批次ID',
-    user_id         BIGINT UNSIGNED NOT NULL,
-    game_id         VARCHAR(32) NOT NULL,
-    pool_id         VARCHAR(64) NOT NULL,
-    pool_version    INT NOT NULL,
-    draw_index      SMALLINT NOT NULL COMMENT '连抽序号',
-    draw_count      SMALLINT NOT NULL COMMENT '批次总数',
-    item_id         VARCHAR(64) NOT NULL,
-    rarity          VARCHAR(16) NOT NULL,
-    prob_id         VARCHAR(64) NOT NULL,
-    is_pity         TINYINT NOT NULL DEFAULT 0,
-    cost_type       VARCHAR(32) NOT NULL,
-    cost_amount     INT NOT NULL,
-    pity_counter    INT NOT NULL DEFAULT 0,
-    draw_time       DATETIME(3) NOT NULL,
-    UNIQUE KEY uk_draw_id (draw_id),
-    KEY idx_user_time (user_id, draw_time),
-    KEY idx_pool_time (pool_id, draw_time),
-    KEY idx_batch (batch_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-
--- 发货记录表（按 draw_id % 16 分库）
-CREATE TABLE t_delivery_record (
-    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    delivery_id     VARCHAR(64) NOT NULL,
-    draw_id         VARCHAR(64) NOT NULL,
-    item_index      SMALLINT NOT NULL,
-    user_id         BIGINT UNSIGNED NOT NULL,
-    item_id         VARCHAR(64) NOT NULL,
-    item_type       VARCHAR(32) NOT NULL,
-    channel         VARCHAR(32) NOT NULL,
-    status          TINYINT NOT NULL DEFAULT 0 COMMENT '0待发 1发送中 2成功 3失败 4补偿',
-    retry_count     TINYINT NOT NULL DEFAULT 0,
-    channel_order_id VARCHAR(128),
-    error_msg       VARCHAR(512),
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_draw_item (draw_id, item_index) COMMENT '幂等唯一索引',
-    KEY idx_user_status (user_id, status),
-    KEY idx_status_time (status, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-
--- 库存表
-CREATE TABLE t_inventory (
-    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    pool_id     VARCHAR(64) NOT NULL,
-    item_id     VARCHAR(64) NOT NULL,
-    total_stock INT NOT NULL DEFAULT -1 COMMENT '-1无限',
-    used_stock  INT NOT NULL DEFAULT 0,
-    version     INT NOT NULL DEFAULT 0,
-    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_pool_item (pool_id, item_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-
--- 用户状态持久化（Redis 宕机恢复用）
-CREATE TABLE t_user_state (
-    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    user_id     BIGINT UNSIGNED NOT NULL,
-    game_id     VARCHAR(32) NOT NULL,
-    pool_type   VARCHAR(32) NOT NULL,
-    layer       VARCHAR(16) NOT NULL DEFAULT '',
-    state_json  MEDIUMTEXT NOT NULL COMMENT 'zlib压缩后的状态JSON',
-    version     INT NOT NULL DEFAULT 0,
-    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_user_pool_layer (user_id, game_id, pool_type, layer)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-```
-
----
-
-## 18. 典型业务场景配置
+## 17. 典型业务场景配置
 
 ### 原神式角色UP池
 ```yaml
@@ -1145,7 +1212,7 @@ pool_type: "static_weighted"
 
 ---
 
-## 19. 技术栈
+## 18. 技术栈
 
 | 类别 | 技术选型 |
 |------|---------|
@@ -1160,7 +1227,7 @@ pool_type: "static_weighted"
 
 ---
 
-## 20. 面试常见问题
+## 19. 面试常见问题
 
 ### Q1: 如何保证限量道具绝对不超发？
 
