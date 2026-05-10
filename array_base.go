@@ -285,9 +285,9 @@ import (
 	"sort"
 )
 
-// 两数之和，返回和为target的两个数，注意不能返回重复数对儿
+// 两数之和，返回所有「和」为target的两个数，注意不能返回重复数对儿
 func twoSumTarget(nums []int, target int) [][]int {
-	// 解题核心是：先排序，再++和--时使用for循环跳过相同元素
+	// 解题核心是：先排序，在++和--时使用for循环跳过相同元素
 	sort.Ints(nums)
 	var lo, hi = 0, len(nums) - 1
 	var res [][]int
@@ -358,7 +358,7 @@ func threeSumTarget(nums []int, target int) [][]int {
 			tuple = append(tuple, nums[i])
 			result = append(result, tuple)
 		}
-		// 跳过第一个数字重复的情况，否则会出现重复结果
+		// 跳过第一个数字重复的情况，否则会出现重复结果 ⚠️
 		for i < len(nums)-1 && nums[i] == nums[i+1] {
 			i++
 		}
@@ -525,7 +525,7 @@ func productExceptSelf(nums []int64) []int64 {
 		prefix[i] = prefix[i-1] * nums[i]
 	}
 
-	// prefix[i] 表示num[i...n-1]的乘积
+	// suffix[i] 表示num[i...n-1]的乘积
 	suffix := make([]int64, n)
 	suffix[n-1] = nums[n-1]
 	for i := n - 2; i >= 0; i-- {

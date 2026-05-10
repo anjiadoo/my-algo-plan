@@ -12,6 +12,13 @@
  *     ❓ 两个指针的起始位置差了多少？（间隔指针）
  *
  * ────────────────────────────────────────────────────────────────────────────
+ *  三种基本操作（断链/接链/移动）
+ *   断链：node.Next = nil           // 切断连接
+ *   接链：node.Next = target        // 建立连接
+ *   移动：node = node.Next          // 移动指针
+ *  关键原则：先保存，再断链，最后接链；一旦覆盖了 node.Next，原来的下一个节点就丢了！
+ *
+ * ────────────────────────────────────────────────────────────────────────────
  * 【四种链表双指针模式】
  *
  *   模式           速度/间距          代表题目
@@ -103,6 +110,16 @@
  * ────────────────────────────────────────────────────────────────────────────
  * 【链表反转 —— 核心操作】
  *
+ *    head.Next.Next = head       // 让下一个节点指回我
+ *    head.Next = nil             // 我指向空（断尾）
+ *    head.Next = tail            // 我指向尾（接尾）
+ *   递归口诀：后面已经反转好了，我只管把自己接上去
+ *
+ *   操作前:  pre → cur → nxt → ...
+ *   操作后:  pre → nxt → ...            (删除 cur)
+ *           pre ← cur   nxt → ...      (反转 cur)
+ *   推荐符号：→ 表示 Next 指针  ✕ 表示断开  ① ② ③ 表示操作顺序
+ * ────────────────────────────────────────────────────────────────────────────
  *   递归反转（reverse）：
  *     base case：head==nil || head.Next==nil → 返回 head（最后一个节点=新头）
  *     递归后：head.Next.Next = head（让下一个节点指回自己）
@@ -389,10 +406,43 @@ func _partition(head *ListNode, x int) *ListNode {
 		if p2.Next.Val < x {
 			p1.Next = p2.Next
 			p1 = p1.Next
-			p2.Next = p2.Next.Next // 把p2中小于x的删除
+
+			// 把p2中小于x的删除
+			p2.Next = p2.Next.Next
 		} else {
-			p2 = p2.Next // p2中的节点>=x，保留并移动p2
+			// p2中的节点>=x，保留并移动p2
+			p2 = p2.Next
 		}
+	}
+
+	p1.Next = dummy2.Next
+	return dummy1.Next
+}
+
+func _partition2(head *ListNode, x int) *ListNode {
+	// 存放小于 x 的链表的虚拟头结点
+	dummy1 := &ListNode{}
+	p1 := dummy1
+
+	// 存放大于等于 x 的链表的虚拟头结点
+	dummy2 := &ListNode{} // 大于等于x
+	p2 := dummy2
+
+	p := head
+	for p != nil {
+		if p.Val < x {
+			p1.Next = p
+			p1 = p1.Next
+		} else {
+			p2.Next = p
+			p2 = p2.Next
+		}
+		// 不能直接让p指针前进 ⚠️
+		// p = p.Next
+		// 要断开原链表中的每个节点的 next 指针
+		next := p.Next
+		p.Next = nil
+		p = next
 	}
 
 	p1.Next = dummy2.Next
@@ -460,11 +510,12 @@ func detectCycle(head *ListNode) *ListNode {
 		}
 	}
 
+	// 2、fast 遇到空指针说明没有环
 	if fast == nil || fast.Next == nil {
 		return nil
 	}
 
-	// 2、快慢指针相同步数出发，相遇时停止
+	// 3、快慢指针相同步数出发，相遇时停止
 	slow = head
 	for slow != fast {
 		slow = slow.Next
@@ -475,11 +526,12 @@ func detectCycle(head *ListNode) *ListNode {
 
 // 相交链表 https://leetcode.cn/problems/intersection-of-two-linked-lists/description/
 func getIntersectionNode(headA, headB *ListNode) *ListNode {
-	// 1,2,3,4,5,6,7,8,9,10|11,5,6,7,8,9,10
-	// 11,5,6,7,8,9,10|1,2,3,4,5,6,7,8,9,10
+	// 1,2,3,4,5,6,7,8,9,10,nil|11,5,6,7,8,9,10,nil
+	// 11,5,6,7,8,9,10,nil|1,2,3,4,5,6,7,8,9,10,nil
 	p1 := headA
 	p2 := headB
 
+	// 关键：不相交时两指针会同时到达nil
 	for p1 != p2 {
 		if p1 != nil {
 			p1 = p1.Next
@@ -786,6 +838,13 @@ func addTwoNumbers21(l1 *ListNode, l2 *ListNode) *ListNode {
 // 寻找重复数 https://leetcode.cn/problems/find-the-duplicate-number/description/
 func findDuplicate(nums []int) int {
 	// 以下是Floyd判圈算法，把数组当作隐式链表
+	// 索引:  0  1  2  3  4  5
+	// 值:    1  3  4  2  2  5
+	//
+	//	"链表"走法：
+	//	0 → nums[0]=1 → nums[1]=3 → nums[3]=2 → nums[2]=4 → nums[4]=2 → nums[2]=4 → ...
+	//	                                                      ↑_______________↑
+	//	                                                          这里形成了环
 	slow, fast := 0, 0
 	for {
 		slow = nums[slow]
@@ -868,7 +927,9 @@ var tail *ListNode
 
 // 反转链表前n个节点
 func reverseN(head *ListNode, n int) *ListNode {
-	// 遍历到第n个节点时，保留后面的节点顺序
+	// n 是"剩余要反转的节点数"，n==1 表示当前节点是最后一个要反转的节点(base case)
+	// n 相当于倒计时，从"要反转几个"开始倒数。倒数到1表示"我是最后一个"该停了
+	// 倒数到 0 的话就意味着走过头了，站到了不该反转的节点上。
 	if n == 1 {
 		tail = head.Next
 		return head
@@ -951,14 +1012,12 @@ func reverseBetween2(head *ListNode, m int, n int) *ListNode {
 
 // K个一组翻转链表 https://leetcode.cn/problems/reverse-nodes-in-k-group/
 func reverseKGroup(head *ListNode, k int) *ListNode {
-	if head == nil {
-		return nil
-	}
 	// 1->2->3->4->5->6->
 	// a     b
 	// 区间[a, b)包含k个待反转元素
 	a, b := head, head
 	for i := 0; i < k; i++ {
+		// base case
 		if b == nil {
 			return head
 		}
@@ -1049,6 +1108,11 @@ func reorderList(head *ListNode) {
 }
 
 func main() {
+	array := []int{1, 2, 3, 4, 5, 6, 7, 8, 9}
+	head := NewMyListNode(array)
+	list := reverseKGroup(head, 3)
+	list.Display()
+
 	//array1 := []int{-9, 3}
 	//array2 := []int{5, 7}
 	//l1 := NewMyListNode(array1)
@@ -1081,8 +1145,8 @@ func main() {
 	//l2 := NewMyListNode(array2)
 	//list := getIntersectionNode(l1, l2)
 
-	array := []int{1, 2, 2, 2, 3, 3, 3, 4, 5, 6, 6, 6}
-	head := NewMyListNode(array)
-	list := deleteDuplicates(head)
-	list.Display()
+	//array := []int{1, 2, 2, 2, 3, 3, 3, 4, 5, 6, 6, 6}
+	//head := NewMyListNode(array)
+	//list := deleteDuplicates(head)
+	//list.Display()
 }
