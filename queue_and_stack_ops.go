@@ -530,7 +530,7 @@ func minInsertions(s string) int {
 			// 难点：当遇到左括号时
 			// 若对右括号的需求量为奇数
 			// 需要插入 1 个右括号
-			// 一个左括号对应两个右括号
+			// 一个左括号对应两个右括号 ⚠️
 			if needRight%2 == 1 {
 				needLeft++
 				needRight--

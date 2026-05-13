@@ -9,7 +9,7 @@
  *      · 推导: 新坐标 = f(旧坐标)
  *
  *   ② 降维思想：把二维问题转化为一维问题
- *      · 一维下标 index = i * n + j（行优先展平）
+ *      · 一维下标：index = i * n + j
  *      · 反算坐标：i = index / n,  j = index % n
  *
  * ────────────────────────────────────────────────────────────────────────────
@@ -363,7 +363,7 @@ func shiftGrid(grid [][]int, k int) [][]int {
 	}
 
 	mn := len(grid) * len(grid[0])
-	k = k % mn
+	k = k % mn // 重要‼️
 
 	reverse(grid, 0, mn-k-1)
 	reverse(grid, mn-k, mn-1)

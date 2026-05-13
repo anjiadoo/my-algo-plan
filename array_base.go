@@ -159,7 +159,7 @@
  *      因为要最长子数组，所以同一前缀和第一次出现的位置越靠前越好。
  *      后续再出现相同前缀和时不更新哈希表。
  *
- *   ⚠️ 易错点9：Go 的 % 运算对负数结果为负，必须手动修正
+ *   ⚠️ 易错点9：Go 的 % 运算对负数结果为负，必须手动修正【重要‼️】
  *      数学上 -1 mod 5 = 4，但 Go 中 -1 % 5 = -1。
  *      修正：remainder := preSum[i] % k; if remainder < 0 { remainder += k }
  *
@@ -640,6 +640,11 @@ func subarraySum(nums []int, k int) int {
 	return res
 }
 
+//给你一份工作时间表 hours，上面记录着某一位员工每天的工作小时数。
+//我们认为当员工一天中的工作小时数大于 8 小时的时候，那么这一天就是「劳累的一天」。
+//所谓「表现良好的时间段」，意味在这段时间内，「劳累的天数」是严格 大于「不劳累的天数」。
+//请你返回「表现良好时间段」的最大长度。
+
 // 表现良好的最长时间段 https://leetcode.cn/problems/longest-well-performing-interval/
 func longestWPI(hours []int) int {
 	preSum := make([]int, len(hours)+1)
@@ -668,10 +673,14 @@ func longestWPI(hours []int) int {
 			// preSum[i] 为正，说明 hours[0..i-1] 都是「表现良好的时间段」
 			res = max(res, i)
 		} else {
-			// 求子数组和 >0 ，即：preSum[i] - preSum[j] > 0 表示区间 [j, i-1] 的和 > 0
-			// preSum[j] < preSum[i] => preSum[j] <= preSum[i]-1
-			// preSum[j] 最大值就是：preSum[i]-1，因为preSum的单调性(递减)，所以负数越大越靠前
-			// 所以查找 mapSumToIdx[preSum[i]-1] 就是在查找最小的 j
+			// preSum[i]-1 的首现位置就是所有 < preSum[i] 的值中最早的，因为：
+			// preSum 从 0 开始
+			// 每次只能 ±1
+			// preSum[i]-1 第一次出现在下标 j1
+			// preSum[i]-2 第一次出现在下标 j2
+			// preSum[i]-3 第一次出现在下标 j3，
+			// 由于连续性，j1一定出现在j2前面，j2一定出现在j3前面
+			// 所以，preSum[i]-1 它一定是最早出现的比 preSum[i] 小的值（无需遍历更小的值）。
 			if j, found := mapSumToIdx[preSum[i]-1]; found {
 				res = max(res, i-j)
 			}
@@ -696,6 +705,7 @@ func subarraysDivByK(nums []int, k int) int {
 
 	for i := 0; i < len(preSum); i++ {
 
+		// 【重要‼️】
 		// 数学上模运算的结果总是在 [0, m-1] 范围内，例如：
 		// -1 mod 5 = 4（因为 -1 = (-1)×5 + 4）
 		// -3 mod 5 = 2（因为 -3 = (-1)×5 + 2）

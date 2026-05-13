@@ -14,13 +14,16 @@
  * ────────────────────────────────────────────────────────────────────────────
  * 【模式一：基础二分 —— 精确查找】
  *
- *   核心框架（闭区间 [left, right]）：
+ *   基础核心框架，区间范围：闭区间 [left, right]
  *     left, right := 0, len(nums)-1
  *     for left <= right {
  *         mid := left + (right-left)/2
- *         if nums[mid] == target { return mid }
- *         else if nums[mid] > target { right = mid - 1 }
- *         else { left = mid + 1 }
+ *         if nums[mid] == target
+ *          { return mid }
+ *         else if nums[mid] > target
+ *          { right = mid - 1 }
+ *         else if nums[mid] < target
+ *          { left = mid + 1 }
  *     }
  *     return -1
  *
@@ -173,7 +176,7 @@
  *      如果用 right = mid-1，会跳过 mid 本身是最小值的情况。
  *
  * ────────────────────────────────────────────────────────────────────────────
- * 【模式七：二分 + 扩展 —— 找 K 个最接近元素】
+ * 【模式七：二分 + 扩展 —— 找 K 个最接近元素-findClosestElements】
  *
  *   步骤：
  *     1. 用 leftBound 找到 x 的插入位置 p（第一个 ≥ x 的位置）
@@ -495,6 +498,8 @@ func splitArray(nums []int, k int) int {
 				sum = 0
 			}
 		}
+		// 循环结束后需要+1计入最后一段
+		// 最后一段不会触发 sum > x（因为循环正常结束）
 		num++
 		return num
 	}
@@ -524,9 +529,7 @@ func splitArray(nums []int, k int) int {
 	return left
 }
 
-// 搜索二维矩阵 https://leetcode.cn/problems/search-a-2d-matrix/description/
-// 每行中的整数从左到右按非严格递增顺序排列。
-// 每行的第一个整数大于前一行的最后一个整数。
+// 搜索二维矩阵-严格有序矩阵 https://leetcode.cn/problems/search-a-2d-matrix/description/
 func searchMatrix(matrix [][]int, target int) bool {
 	m, n := len(matrix), len(matrix[0])
 	left, right := 0, m*n-1
@@ -546,17 +549,13 @@ func searchMatrix(matrix [][]int, target int) bool {
 	return false
 }
 
-// 搜索二维矩阵II https://leetcode.cn/problems/search-a-2d-matrix-ii/
-// 每行的元素从左到右升序排列。
-// 每列的元素从上到下升序排列。
+// 搜索二维矩阵II-行列各自有序矩阵 https://leetcode.cn/problems/search-a-2d-matrix-ii/
 func searchMatrixII(matrix [][]int, target int) bool {
-	// 从右上角开始，规定只能向左或向下移动
+	// 技巧：从右上角出发，利用"向左变小，向下变大"的淘汰法（副对角线）
 	m, n := len(matrix), len(matrix[0])
 	i, j := 0, n-1
 
 	for i < m && j >= 0 {
-		//fmt.Printf("i=%d j=%d next=%d\n", i, j, matrix[i][j])
-
 		if matrix[i][j] == target {
 			return true
 		} else if matrix[i][j] > target {
@@ -570,6 +569,7 @@ func searchMatrixII(matrix [][]int, target int) bool {
 
 // 匹配子序列的单词数 https://leetcode.cn/problems/number-of-matching-subsequences/
 func numMatchingSubseq(s string, words []string) int {
+	// 对 s 进行预处理，记录 char -> 该 char 的索引列表
 	mapIndexs := make(map[byte][]int)
 	for i := range s {
 		if mapIndexs[s[i]] == nil {
@@ -625,7 +625,7 @@ func numMatchingSubseq(s string, words []string) int {
 	return res
 }
 
-// 找到K个最接近的元素 https://leetcode.cn/problems/find-k-closest-elements/
+// 找到 K 个最接近的元素 https://leetcode.cn/problems/find-k-closest-elements/
 func findClosestElements(arr []int, k int, x int) []int {
 	leftBound := func(nums []int, x int) int {
 		left, right := 0, len(nums)-1
@@ -644,7 +644,7 @@ func findClosestElements(arr []int, k int, x int) []int {
 
 	p := leftBound(arr, x)
 
-	// 因为p本身可能越界，选择两端都开的区间(left, right)
+	// 因为p本身可能越界，选择两端都开的区间(left, right)【重要‼️】
 	left, right := p-1, p
 
 	// 扩展区间，直到区间内包含k个元素
@@ -685,10 +685,12 @@ func searchInsert(nums []int, target int) int {
 
 // 寻找峰值 https://leetcode.cn/problems/find-peak-element/
 func findPeakElement(nums []int) int {
-	// 题目前提：对于所有有效的i都有nums[i]!=nums[i+1]
+	// 前提：对于所有有效的i都有nums[i] != nums[i+1] ⚠️
 	left, right := 0, len(nums)-1
 	for left <= right {
 		mid := left + (right-left)/2
+
+		// 必须先判断 mid+1 是否越界【重要‼️】
 		if mid+1 == len(nums) {
 			return mid
 		} else if nums[mid] > nums[mid+1] {
@@ -705,6 +707,8 @@ func peakIndexInMountainArray(arr []int) int {
 	left, right := 0, len(arr)-1
 	for left <= right {
 		mid := left + (right-left)/2
+
+		// 必须先判断 mid+1 是否越界【重要‼️】
 		if mid+1 == len(arr) {
 			return mid
 		} else if arr[mid] > arr[mid+1] {
