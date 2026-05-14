@@ -110,6 +110,41 @@
  * ────────────────────────────────────────────────────────────────────────────
  * 【模式四：单调栈 —— "下一个更大/更小"问题族】
  *
+ *   ┌─────────────────────────────────────────────────────────────────────┐
+ *   │ 统一理解框架：单调栈本质只做一件事 ——                                    │
+ *   │   对每个元素，找到它「某个方向上」第一个「比它大/小」的元素                  │
+ *   │                                                                    │
+ *   │ 【做题四步决策】                                                      │
+ *   │  1️⃣ 找什么？ → 更大 → 递减栈 ｜ 更小 → 递增栈（栈的单调性与目标相反）       │
+ *   │  2️⃣ 答案在哪？→ 查询型(谁比我大/小) → 栈顶 ｜ 计算型(弹出时算) → 弹出      │
+ *   │  3️⃣ 遍历方向？→ 找「下一个」从后往前 ｜ 找「上一个」从前往后（查询型）       │
+ *   │              → 计算型统一从前往后                                     │
+ *   │  4️⃣ 存什么？ → 需要距离/位置 → 存下标 ｜ 只需值 → 存值                   │
+ *   │                                                                    │
+ *   │ 【递增/递减栈】想找什么，就维护相反的单调性                               │
+ *   │  · 找「更大」→ 维护递减栈（弹掉所有≤我的，栈顶幸存者=第一个比我大的）       │
+ *   │  · 找「更小」→ 维护递增栈（弹掉所有≥我的，栈顶幸存者=第一个比我小的）       │
+ *   │  · 查询型视角：弹完后栈顶 = 我的答案（我在找谁比我大/小）                  │
+ *   │  · 计算型视角：当前元素 = 被弹出者的答案（被弹者终于等到了比它大/小的）      │
+ *   │                                                                    │
+ *   │ 【遍历方向】你站在谁的视角，就从谁开始遍历                                │
+ *   │  · 从后往前：我来时右边已就绪 → 直接看栈顶得答案（查询型·下一个）           │
+ *   │  · 从前往后：我来时左边已就绪 → 直接看栈顶得答案（查询型·上一个）           │
+ *   │  · 从前往后：我先入场等人踢我 → 被弹出时处理（计算型）                     │
+ *   │                                                                    │
+ *   │ 【上一个 vs 下一个 —— 完全对称，只改遍历方向】                            │
+ *   │  · 下一个更大：从后往前 + 递减栈 → 栈顶是右边第一个更大                    │
+ *   │  · 上一个更大：从前往后 + 递减栈 → 栈顶是左边第一个更大                    │
+ *   │  · 下一个更小：从后往前 + 递增栈 → 栈顶是右边第一个更小                    │
+ *   │  · 上一个更小：从前往后 + 递增栈 → 栈顶是左边第一个更小                    │
+ *   │  （栈的单调性不变，唯一区别是遍历方向）                                   │
+ *   │                                                                    │
+ *   │ 【心智模型：排队淘汰赛】                                               │
+ *   │  栈 = 按身高排好的队伍，新人来了踢掉所有比自己矮的                         │
+ *   │  被踢的人：终于找到了"第一个比自己高的"（就是踢他的新人）                   │
+ *   │  栈顶幸存者：新人能看到的"第一个比自己高的"                               │
+ *   └─────────────────────────────────────────────────────────────────────┘
+ *
  *   核心模板（从后往前遍历，单调递减栈 → 找下一个更大元素）：
  *     for i := n-1; i >= 0; i-- {
  *         for len(stack) > 0 && nums[i] >= stack[top] {
@@ -118,6 +153,20 @@
  *         res[i] = stack为空 ? -1 : stack[top]   // 栈顶就是下一个更大
  *         stack.push(nums[i])
  *     }
+ *
+ *   对称模板（从前往后遍历，单调递减栈 → 找上一个更大元素）：
+ *     for i := 0; i < n; i++ {
+ *         for len(stack) > 0 && nums[i] >= stack[top] {
+ *             stack.pop()   // 比我小的没资格当"上一个更大"
+ *         }
+ *         res[i] = stack为空 ? -1 : stack[top]   // 栈顶就是左边第一个更大
+ *         stack.push(nums[i])
+ *     }
+ *     // 上一个更小：同理，改为递增栈（弹出条件 nums[i] <= stack[top]）
+ *
+ *   应用：largestRectangleArea 弹出时同时得到两个方向的"上/下一个更小"
+ *     · 当前 i = 右边第一个更小（下一个更小）
+ *     · 弹出后新栈顶 = 左边第一个更小（上一个更小）
  *
  *   ⚠️ 易错点9：栈中存的是值还是下标？
  *     · nextGreaterElement：存值（因为需要映射到另一个数组）
@@ -874,7 +923,9 @@ func removeKdigits(num string, k int) string {
 // 车队 https://leetcode.cn/problems/car-fleet/
 func carFleet(target int, position []int, speed []int) int {
 	// 关键：按起始位置排序后，到达时间快的车会被后面到达时间慢的车卡住
-	// 所以应该是计算单调递减序列
+	// 所以应该是计算单调递减序列(从前往后遍历)
+	// 假设计算出的time数组为 [12, 3, 7, 1, 2]，那么观察数组的单调性变化
+	// 最后肯定会形成三个车队，他们到达终点的时间分别是 12, 7, 2。
 
 	type Pair struct {
 		pos   int
@@ -897,20 +948,23 @@ func carFleet(target int, position []int, speed []int) int {
 		times = append(times, float64(target-pair.pos)/float64(pair.speed))
 	}
 
-	// 单调递减栈大小就是答案
-	//var stack []int
-	//for i := len(times) - 1; i >= 0; i-- {
-	//	for len(stack) > 0 && times[i] <= stack[len(stack)-1] {
+	// 使用单调栈计算车队的数量
+	//var stack []float64
+	//for i := 0; i < len(times); i++ {
+	//	for len(stack) > 0 && times[i] >= stack[len(stack)-1] {
 	//		stack = stack[:len(stack)-1]
 	//	}
 	//	stack = append(stack, times[i])
 	//}
+	//return len(stack)
 
 	// 避免使用栈模拟，倒序遍历取递增序列就是答案
+	// time数组为 [12, 3, 7, 1, 2]
+	// 到达时间快的车会被后面到达时间慢的车卡住
 	var maxTime float64
 	res := 0
 	for i := len(times) - 1; i >= 0; i-- {
-		if times[i] > maxTime {
+		if times[i] > maxTime { // 追不上
 			res++
 			maxTime = times[i]
 		}
@@ -978,6 +1032,9 @@ func findUnsortedSubarrayII(nums []int) int {
 
 // 柱状图中最大的矩形 https://leetcode.cn/problems/largest-rectangle-in-histogram/
 func largestRectangleArea(heights []int) int {
+	// 哨兵技巧：在 heights 首尾各加一个 0
+	// 头部的 0：保证栈底永远有元素，计算宽度时不会栈空
+	// 尾部的 0：保证所有柱子最终都会被弹出（触发面积计算）
 	nums := make([]int, len(heights)+2)
 	for i := 0; i < len(heights); i++ {
 		nums[i+1] = heights[i]
@@ -1157,9 +1214,9 @@ func maxSubarraySumCircular(nums []int) int {
 
 func main() {
 
-	fmt.Println(maxSubarraySumCircular([]int{1, -2, 3, -2}))
-	fmt.Println(maxSubarraySumCircular([]int{5, -3, 5}))
-	fmt.Println(maxSubarraySumCircular([]int{3, -2, 2, -3}))
+	//fmt.Println(maxSubarraySumCircular([]int{1, -2, 3, -2}))
+	//fmt.Println(maxSubarraySumCircular([]int{5, -3, 5}))
+	//fmt.Println(maxSubarraySumCircular([]int{3, -2, 2, -3}))
 
 	//fmt.Println(shortestSubarray([]int{1}, 1))
 	//fmt.Println(shortestSubarray([]int{1, 2}, 4))
@@ -1178,8 +1235,8 @@ func main() {
 	//fmt.Println(findUnsortedSubarrayII([]int{2, 6, 4, 8, 10, 9, 15}))
 	//fmt.Println(findUnsortedSubarrayII([]int{1, 2, 3, 4, 5}))
 
-	//fmt.Println(carFleet(10, []int{6, 8}, []int{3, 2}))
-	//fmt.Println(carFleet(12, []int{10, 8, 0, 5, 3}, []int{2, 4, 1, 1, 3}))
+	fmt.Println(carFleet(10, []int{6, 8}, []int{3, 2}))
+	fmt.Println(carFleet(12, []int{10, 8, 0, 5, 3}, []int{2, 4, 1, 1, 3}))
 
 	//fmt.Println(removeKdigits("1432219", 3))
 	//fmt.Println(removeKdigits("10200", 1))
