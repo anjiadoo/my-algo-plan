@@ -308,7 +308,8 @@ CREATE TABLE audit_record (
 
 ```mermaid
 flowchart TD
-    User["用户请求（读评论 / 写评论 / 点赞）"]
+    USER_READ["用户读请求\n（读评论列表 / 查看详情）"]
+    USER_WRITE["用户写请求\n（发评论 / 点赞 / 删除）"]
 
     subgraph 边缘层
         CDN["CDN / 边缘节点\n热门内容评论列表缓存\nTTL=3~5s，命中率50~60%"]
@@ -320,11 +321,11 @@ flowchart TD
     end
 
     subgraph 应用层
-        SVC_READ["评论读服务\n本地缓存 go-cache TTL=5s"]
-        SVC_WRITE["评论写服务\n内容安全预检 + 事务写入"]
-        SVC_LIKE["点赞服务\nRedis 原子去重"]
-        SVC_AUDIT["审核消费服务"]
-        SVC_NOTIFY["通知服务"]
+        SVC_READ["评论读服务（600台）\n本地缓存 go-cache TTL=5s"]
+        SVC_WRITE["评论写服务（800台）\n内容安全预检 + 事务写入"]
+        SVC_LIKE["点赞服务（200台）\nRedis 原子去重"]
+        SVC_AUDIT["审核消费服务（100台）"]
+        SVC_NOTIFY["通知服务（300台）"]
     end
 
     subgraph 中间件层
@@ -334,7 +335,7 @@ flowchart TD
             REDIS_LIKE["点赞去重集群\n8分片 x 1主2从\nSADD原子去重"]
             REDIS_COUNT["计数缓存集群\n4分片 x 1主2从\n评论数/点赞数"]
         end
-        MQ["RocketMQ 集群\n32主32从 + 4个NameServer\n评论写入/审核/通知/点赞异步解耦"]
+        MQ["RocketMQ 集群\n32主32从 + 4个NameServer\n审核/通知/点赞异步解耦"]
         ETCD["ETCD\n配置中心 / 服务注册发现\n热点开关 / 降级阈值"]
         SECURITY["内容安全服务\n关键词实时拦截 + AI模型异步审核"]
     end
@@ -349,21 +350,27 @@ flowchart TD
         PROM["Prometheus + Grafana"]
     end
 
-    User --> CDN
-    CDN -->|未命中| LVS
+    %% 读路径：走 CDN 边缘缓存
+    USER_READ -->|读请求| CDN
+    CDN -->|命中| USER_READ
+    CDN -->|未命中，回源| LVS
+
+    %% 写路径：绕过 CDN，直连接入层
+    USER_WRITE -->|写请求，不经CDN| LVS
+
     LVS --> GW
-    GW --> SVC_READ
-    GW --> SVC_WRITE
-    GW --> SVC_LIKE
+    GW -->|/comment/list| SVC_READ
+    GW -->|/comment/publish| SVC_WRITE
+    GW -->|/comment/like| SVC_LIKE
 
     SVC_READ --> REDIS_LIST
     SVC_READ --> REDIS_HOT
     SVC_READ --> REDIS_COUNT
-    SVC_READ --> DB_COMMENT
+    SVC_READ -.->|缓存全未命中| DB_COMMENT
 
     SVC_WRITE --> SECURITY
-    SVC_WRITE --> REDIS_LIST
     SVC_WRITE --> DB_COMMENT
+    SVC_WRITE --> REDIS_LIST
     SVC_WRITE --> MQ
 
     SVC_LIKE --> REDIS_LIKE
@@ -376,24 +383,25 @@ flowchart TD
     SVC_AUDIT --> DB_AUDIT
     SVC_AUDIT --> DB_COMMENT
 
-    DB_COMMENT --> ES
-    DB_LIKE --> PROM
+    DB_COMMENT -.->|binlog同步| ES
+    SVC_READ --> ELK
+    SVC_WRITE --> ELK
     REDIS_LIST --> PROM
     MQ --> PROM
-    SVC_WRITE --> ELK
-    SVC_READ --> ELK
 ```
 
-**一、边缘层（CDN / 边缘节点，流量卸载）**
+**一、边缘层（CDN / 边缘节点，仅承载读流量）**
 
 组件：CDN 节点（全国/全球边缘 POP 点）
 
 核心功能：
-- 热门内容评论列表短时缓存（TTL=3~5s），命中率 50~60%，消化约 300万读 QPS；
+- **仅缓存读请求**（评论列表、评论详情），热门内容短时缓存（TTL=3~5s），命中率 50~60%，消化约 300万读 QPS；
 - 实际到达数据中心的读 QPS 从 500万降至 **200万**，服务器规模和出口带宽缩减 50%+；
-- 仅缓存读请求，写请求（发评论/点赞）直接穿透到数据中心。
+- **写请求（发评论/点赞/删除）不经过 CDN**，直接到达接入层 LVS，避免 CDN 缓存脏数据和不必要的回源延迟。
 
-关联关系：用户请求 → CDN → LVS → 云原生网关
+关联关系：
+- 读路径：用户 → CDN（命中直返 / 未命中回源）→ LVS → 网关 → 读服务
+- 写路径：用户 → LVS → 网关 → 写服务/点赞服务（绕过 CDN）
 
 ---
 
@@ -463,32 +471,57 @@ flowchart TD
 ### 5.1 发布评论流程
 
 ```
-1. 前端生成全局唯一 request_id（雪花算法），防重复提交
-2. 网关：登录态校验（写操作必须登录），单用户限流（1s 最多发5条评论）
-3. 写服务：
-   a. 幂等校验：Redis SET NX "comment:req:{request_id}" 1 EX 300，防重复提交
-   b. 内容安全预检（同步，< 5ms）：关键词匹配，命中直接拒绝，返回"违规内容"
-   c. DB 事务写入：
-      - INSERT INTO comment（status=0 待审核）
-      - INSERT INTO audit_record（result=0 待审核）
-      - object_comment_count 暂不更新（审核通过后再更新）
-   d. 对评论作者本人：立即写 Redis，让作者看到自己的评论（status=0 仅自己可见）
-   e. 发 MQ 消息（topic_comment_audit）：触发异步 AI 审核
-   f. 立即返回发布成功（comment_id），用户可见自己的评论
-
-4. 审核消费服务（异步，100~500ms）：
-   a. 消费 topic_comment_audit
-   b. 调用内容安全 API（AI 模型）
-   c. 审核通过：
-      - UPDATE comment SET status=1
-      - UPDATE audit_record SET result=1
-      - ZINCRBY 将 comment_id 加入 Redis ZSet（对所有人可见）
-      - INCR object_comment_count
-      - 发 topic_comment_notify（触发通知）
-   d. 审核拒绝：
-      - UPDATE comment SET status=2
-      - UPDATE audit_record SET result=2, reason=xxx
-      - 对作者推送"评论未通过审核"通知
+发布评论请求入口
+        │
+        ▼
+① 前端：雪花算法生成全局唯一 request_id，防重复提交
+        │
+        ▼
+② 网关层
+        ├─ 登录态校验（写操作必须登录）
+        └─ 单用户限流：1s 最多发5条评论
+        │
+        ▼
+③ 写服务（P99 < 200ms，不含异步审核）
+        ├─ a. 幂等校验
+        │    Redis SET NX "comment:req:{request_id}" 1 EX 300
+        │    已存在 → 直接返回已有 comment_id（幂等）
+        │    不存在 → 继续执行
+        │
+        ├─ b. 内容安全预检（同步，< 5ms）
+        │    关键词匹配，命中 → 直接拒绝，返回"违规内容"
+        │    未命中 → 继续执行
+        │
+        ├─ c. DB 事务写入（原子执行）
+        │    1. INSERT INTO comment（status=0 待审核）
+        │    2. INSERT INTO audit_record（result=0 待审核）
+        │    3. object_comment_count 暂不更新（审核通过后再更新）
+        │
+        ├─ d. 对评论作者本人：立即写 Redis
+        │    让作者看到自己的评论（status=0 仅自己可见）
+        │
+        ├─ e. 发 MQ 消息（topic_comment_audit）
+        │    触发异步 AI 审核（脱离写入关键路径）
+        │
+        └─ f. 立即返回发布成功（comment_id）
+             用户可见自己的评论，体验无感知延迟
+        │
+        ▼
+④ 审核消费服务（异步，100~500ms，不影响用户响应）
+        ├─ 消费 topic_comment_audit
+        ├─ 调用内容安全 API（AI 模型）
+        │
+        ├─ 审核通过：
+        │    a. UPDATE comment SET status=1
+        │    b. UPDATE audit_record SET result=1
+        │    c. ZADD 将 comment_id 加入 Redis ZSet（对所有人可见）
+        │    d. INCR object_comment_count
+        │    e. 发 topic_comment_notify（触发@通知/被回复通知）
+        │
+        └─ 审核拒绝：
+             a. UPDATE comment SET status=2
+             b. UPDATE audit_record SET result=2, reason=xxx
+             c. 对作者推送"评论未通过审核"通知
 
 关键点：写链路 P99 < 200ms（不包含 AI 审核）；用户体验优先，先展示后审核
 ```
@@ -539,24 +572,34 @@ func GetCommentList(objectID int64, cursor int64, limit int) ([]*Comment, int64,
 **完整读取链路：**
 
 ```
-① 本地缓存（go-cache，< 0.1ms，拦截 70%）：
-   - Key = cm:list:{object_id}:{cursor}，TTL=5s
-   - 热点内容 TTL 延长到 30s（ETCD 配置热点阈值）
-
-② Redis ZSet 范围查询（< 3ms）：
-   - Key = cm:list:{object_id}，ZSet，score=发布时间戳（毫秒）
-   - ZREVRANGEBYSCORE 返回 comment_id 列表（仅 ID，不含内容）
-   - 热点内容走独立集群，不影响普通内容
-
-③ 批量 mget 获取评论详情（< 5ms）：
-   - Key = cm:detail:{comment_id}，Hash 结构
-   - pipeline 批量获取，一次 RTT 获取 20 条评论详情
-   - 未命中的 ID 再批量查 DB，回写缓存
-
-④ 返回（整体 P99 < 50ms）：
-   - 根评论列表（20条/页）
-   - 每条根评论附带前3条热门回复（预取，减少二次请求）
-   - 携带 nextCursor，下次请求用于游标分页
+读取评论列表请求入口
+        │
+        ▼
+① 本地缓存（go-cache，< 0.1ms，拦截约70%请求）
+        ├─ Key = cm:list:{object_id}:{cursor}，TTL=5s
+        ├─ 热点内容 TTL 延长到 30s（ETCD 配置热点阈值）
+        ├─ 命中 → 直接返回缓存结果
+        └─ 未命中 → 进入下一步
+        │
+        ▼
+② Redis ZSet 范围查询（< 3ms）
+        ├─ Key = cm:list:{object_id}，ZSet，score=发布时间戳（毫秒）
+        ├─ ZREVRANGEBYSCORE 返回 comment_id 列表（仅 ID，不含内容）
+        ├─ 热点内容走独立集群，不影响普通内容
+        ├─ 命中 → 拿到 ID 列表，进入下一步
+        └─ 未命中（冷门内容）→ 回源 DB 查询，异步回写 Redis ZSet
+        │
+        ▼
+③ 批量 mget 获取评论详情（< 5ms）
+        ├─ Key = cm:detail:{comment_id}，Hash 结构
+        ├─ pipeline 批量获取，一次 RTT 获取 20 条评论详情
+        └─ 未命中的 ID → 批量查 DB，回写缓存
+        │
+        ▼
+④ 组装返回（整体 P99 < 50ms）
+        ├─ 根评论列表（20条/页）
+        ├─ 每条根评论附带前3条热门回复（预取，减少二次请求）
+        └─ 携带 nextCursor，下次请求用于游标分页
 ```
 
 ### 5.3 点赞评论流程
@@ -594,11 +637,28 @@ end
 ```
 
 ```
-点赞链路（P99 < 30ms）：
-① Redis Lua 原子去重 + 计数（< 2ms）：返回最新点赞数，立即展示给用户
-② 异步发 MQ（topic_like_event）：后台落库（< 5ms，非阻塞）
-③ MQ 消费者：幂等写 comment_like 表（uk_comment_uid 唯一索引兜底）
-④ 定时任务（每 30s）：将 Redis 计数同步到 comment_count 表（批量 UPDATE）
+点赞请求入口
+        │
+        ▼
+① Redis Lua 原子去重 + 计数（< 2ms）
+        执行预设Lua脚本，返回对应结果：
+        ├─ 返回 -1 → 已点赞/未点赞（幂等返回）→ 结束流程
+        └─ 返回正数 → 操作成功，附带最新点赞数 → 立即展示给用户
+        │
+        ▼
+② 异步发 MQ（topic_like_event，< 5ms，非阻塞）
+        脱离点赞关键路径，不影响响应速度
+        │
+        ▼
+③ MQ 消费者（异步落库）
+        ├─ 幂等写 comment_like 表（uk_comment_uid 唯一索引兜底）
+        └─ 写入失败（唯一索引冲突）→ 忽略，说明已落库
+        │
+        ▼
+④ 定时任务（每 30s）
+        └─ 将 Redis 计数批量同步到 comment_count 表（批量 UPDATE）
+
+整体 P99 < 30ms（仅含步骤①②，后续异步不影响用户响应）
 ```
 
 ### 5.4 热点内容评论爆炸处理
@@ -1036,11 +1096,11 @@ cm.limit.write_qps: 500000         # 全局写评论 QPS 上限
 
 ```
 ┌────────────────────────────────────┐  ┌────────────────────────────────────┐
-│  华南机房（深圳，主机房）            │  │  华东机房（上海，同城灾备 + 异地多活）│
-│  ├── 全量评论读写服务               │  │  ├── 全量评论读写服务                │
-│  ├── MySQL 256主（按 object_id 归属）│  │  ├── MySQL 256主（互为异地副本）     │
-│  ├── Redis 全量集群                 │  │  ├── Redis 全量集群                  │
-│  └── RocketMQ 全量集群              │  │  └── RocketMQ 全量集群               │
+│  华南机房（深圳，主机房）              │  │  华东机房（上海，同城灾备 + 异地多活）  │
+│  ├── 全量评论读写服务                 │  │  ├── 全量评论读写服务                │
+│  ├── MySQL 256主（按 object_id 归属）│  │  ├── MySQL 256主（互为异地副本）      │
+│  ├── Redis 全量集群                 │   │  ├── Redis 全量集群                │
+│  └── RocketMQ 全量集群              │   │  └── RocketMQ 全量集群             │
 └─────────────┬──────────────────────┘  └───────────────┬────────────────────┘
               │                                         │
               └────────── DTS 双向数据同步 ──────────────┘

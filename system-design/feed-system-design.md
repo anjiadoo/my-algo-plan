@@ -5,18 +5,18 @@
 
 ## 10个关键技术决策
 
-| # | 决策 | 选择 | 核心理由 |
-|---|------|------|---------|
-| 1 | **推拉阈值量化** | 5000粉丝 | Redis 集群裸容量（768分片 × 10万 = 7680万 ZADD/s），安全水位70%即5376万/s，实际 Fan-out 写入约5000万/s（10万发帖 × 平均500粉丝），利用率65%在安全水位内。阈值5000保证99%用户走推模型，大V拉模型不写 inbox |
-| 2 | **inbox 冷热分离** | Redis 存最近100条（自适应扩至1000条），MySQL 存3000条，HBase 存全量 | 100条覆盖95%刷流场景，全量存 Redis 需22TB（不可接受），按活跃度自适应容量降低重度用户的"翻到冷数据"概率 |
-| 3 | **帖子内容与 Feed 列表分离** | inbox 只存 post_id，内容独立缓存 | 帖子修改/删除只需更新帖子缓存（O(1)），若 inbox 存内容则需 O(粉丝数) 次更新 |
-| 4 | **Fan-out 令牌桶控速** | 每 Worker 上限 3.5万 ZADD/s | 1500台 Worker × 3.5万/s = 5250万 ZADD/s ≥ 实际5000万/s需求，令牌桶平滑突发，防止毫秒级写入洪峰击穿单分片 |
-| 5 | **大V发帖延迟分发** | Kafka 延迟投递5分钟 | 1亿粉丝集中刷新产生1亿次 author_posts ZSet 读，延迟+本地缓存(1s TTL)将 Redis 实际读降至2400次/s |
-| 6 | **取关惰性清理** | 不主动 ZREM inbox，拉取时 HashMap 过滤 | inbox 最多100条，过滤 O(100) < 0.1ms；主动清理需遍历粉丝所有 inbox 代价为 O(粉丝数 × 100) |
-| 7 | **会话快照分页** | 以 sessionStartTime 锁定 Feed 上界，新内容用"顶部气泡"通知 | 彻底解决 Fan-out 在翻页中途插入新帖导致的"幽灵帖跳页"问题 |
-| 8 | **内容比例交织** | 关注流60% + 推荐流20% + 大V拉流20%，最多连续3条大V | 防止算法独占 Feed 首页，保证用户看到关注的普通用户内容，ETCD 动态可调 |
-| 9 | **审核状态机** | 高信用用户先发后审（status=1 直接可见），低信用先审后发 | 白名单用户发帖 P99 不受审核耗时影响；违规内容审核通过事件驱动 Fan-out，不丢失 |
-| 10 | **关注图演进路径** | 当前 MySQL+Redis，5000亿对后迁移至图数据库（JanusGraph） | Redis 存5000亿关注对需2TB，图数据库支持共同好友/N度关系等复杂查询，双写灰度迁移 |
+| 决策 | 选择 | 核心理由 |
+|------|------|---------|
+| **推拉阈值量化** | 5000粉丝 | Redis 集群裸容量（768分片 × 10万 = 7680万 ZADD/s），安全水位70%即5376万/s，实际 Fan-out 写入约5000万/s（10万发帖 × 平均500粉丝），利用率65%在安全水位内。阈值5000保证99%用户走推模型，大V拉模型不写 inbox |
+| **inbox 冷热分离** | Redis 存最近100条（自适应扩至1000条），MySQL 存3000条，HBase 存全量 | 100条覆盖95%刷流场景，全量存 Redis 需22TB（不可接受），按活跃度自适应容量降低重度用户的"翻到冷数据"概率 |
+| **帖子内容与 Feed 列表分离** | inbox 只存 post_id，内容独立缓存 | 帖子修改/删除只需更新帖子缓存（O(1)），若 inbox 存内容则需 O(粉丝数) 次更新 |
+| **Fan-out 令牌桶控速** | 每 Worker 上限 3.5万 ZADD/s | 1500台 Worker × 3.5万/s = 5250万 ZADD/s ≥ 实际5000万/s需求，令牌桶平滑突发，防止毫秒级写入洪峰击穿单分片 |
+| **大V发帖延迟分发** | Kafka 延迟投递5分钟 | 1亿粉丝集中刷新产生1亿次 author_posts ZSet 读，延迟+本地缓存(1s TTL)将 Redis 实际读降至2400次/s |
+| **取关惰性清理** | 不主动 ZREM inbox，拉取时 HashMap 过滤 | inbox 最多100条，过滤 O(100) < 0.1ms；主动清理需遍历粉丝所有 inbox 代价为 O(粉丝数 × 100) |
+| **会话快照分页** | 以 sessionStartTime 锁定 Feed 上界，新内容用"顶部气泡"通知 | 彻底解决 Fan-out 在翻页中途插入新帖导致的"幽灵帖跳页"问题 |
+| **内容比例交织** | 关注流60% + 推荐流20% + 大V拉流20%，最多连续3条大V | 防止算法独占 Feed 首页，保证用户看到关注的普通用户内容，ETCD 动态可调 |
+| **审核状态机** | 高信用用户先发后审（status=1 直接可见），低信用先审后发 | 白名单用户发帖 P99 不受审核耗时影响；违规内容审核通过事件驱动 Fan-out，不丢失 |
+| **关注图演进路径** | 当前 MySQL+Redis，5000亿对后迁移至图数据库（JanusGraph） | Redis 存5000亿关注对需2TB，图数据库支持共同好友/N度关系等复杂查询，双写灰度迁移 |
 
 ---
 
@@ -221,15 +221,15 @@ Feed 拉取验证：
   │    Post      │──PostPublished───┬──→ Fan-out Worker ──→ │   UserInbox       │ ← 推模型目的地
   │  (MySQL)     │                  │                       │  (Redis ZSet/uid) │
   └──────┬───────┘                  │                       └───────────────────┘
-         │                          ├──→ AuthorPosts 更新 → ┌───────────────────┐
+         │                          ├──→ AuthorPosts 更新 →  ┌───────────────────┐
          │    PostDeleted───────────┤                       │ AuthorPostsView   │ ← 大V拉模型数据源
          ↓                          │                       │ (Redis ZSet/author)│
-  ┌──────────────┐                  └──→ 推荐/话题索引      └───────────────────┘
+  ┌──────────────┐                  └──→ 推荐/话题索引        └───────────────────┘
   │   Follow     │                                          ┌───────────────────┐
-  │  (MySQL图)   │──Followed/Unfollowed──→ 增量/惰性修复 →  │  FollowingSet     │ ← 关注列表缓存
+  │  (MySQL图)   │──Followed/Unfollowed──→ 增量/惰性修复 →     │  FollowingSet    │ ← 关注列表缓存
   └──────────────┘                                          └───────────────────┘
                                                             ┌───────────────────┐
-                  推荐算法服务（独立）────────────────────→ │  RecommendFeed    │ ← 推荐流
+                  推荐算法服务（独立）────────────────────→     │  RecommendFeed   │ ← 推荐流
                                                             └───────────────────┘
 
   [聚合读取]  Feed 拉取 = UserInbox(60%) × AuthorPostsView 拉补(20%) × RecommendFeed(20%)
@@ -507,28 +507,55 @@ func getFanoutMode(authorUID int64) FanoutMode {
 **完整发帖流程：**
 
 ```
-1. 前端发帖请求（携带 request_id 幂等键）
-2. 网关：用户限流（单用户 1分钟最多发 10帖），内容大小校验
-3. 发帖服务：
-   a. 幂等校验：Redis SETNX "post:idem:{request_id}" TTL=24h，已存在直接返回
-   b. 媒体上传：图片/视频已上传 OSS，此处校验 media_key 有效性
-   c. 写 DB：INSERT INTO post (post_id=雪花ID, ...)，status=0（审核中）或1（白名单用户直发）
-   d. 写帖子缓存：SET post:{post_id} {json} EX 86400
-   e. 发 Kafka（三个 Topic 并发发送）：
-      - topic_fanout：触发 Fan-out（含 fanout_mode）
-      - topic_audit：内容审核（异步，不阻塞发帖）
-      - topic_recommend_update：通知推荐系统有新帖
-   f. 返回 post_id 给前端（不等 Fan-out 完成）
-
-4. Fan-out Worker 异步处理（topic_fanout 消费）：
-   a. 读取 fanout_mode
-   b. PushMode：
-      - 分页查 follow_relation_reverse（按followee分片，每页1000个粉丝）
-      - 批量 ZADD inbox:{uid} score(publish_time) post_id（Pipeline 批量）
-      - 每页写完后更新 fanout_task.pushed_fans + last_fan_uid（断点续传）
-      - 异步写 user_inbox 冷数据表（见下方双写一致性方案）
-   c. PullMode：不写 inbox，仅更新 author_posts ZSet（让拉取时能找到此帖）
-   d. HybridMode：只推 30 天内活跃的粉丝（ZSET 维护活跃用户名单）
+发帖请求入口
+        │
+        ▼
+① 前端：携带 request_id 幂等键（雪花算法生成）
+        │
+        ▼
+② 网关层
+        ├─ 用户限流：单用户 1分钟最多发 10帖
+        └─ 内容大小校验
+        │
+        ▼
+③ 发帖服务（同步路径，P99 < 200ms）
+        ├─ a. 幂等校验
+        │    Redis SETNX "post:idem:{request_id}" TTL=24h
+        │    已存在 → 直接返回已有 post_id（幂等）
+        │    不存在 → 继续执行
+        │
+        ├─ b. 媒体上传校验
+        │    图片/视频已上传 OSS，此处校验 media_key 有效性
+        │
+        ├─ c. 写 DB
+        │    INSERT INTO post (post_id=雪花ID, ...)
+        │    status=0（审核中）或 status=1（白名单用户直发）
+        │
+        ├─ d. 写帖子缓存
+        │    SET post:{post_id} {json} EX 86400
+        │
+        ├─ e. 发 Kafka（三个 Topic 并发发送）
+        │    ├─ topic_fanout：触发 Fan-out（含 fanout_mode）
+        │    ├─ topic_audit：内容审核（异步，不阻塞发帖）
+        │    └─ topic_recommend_update：通知推荐系统有新帖
+        │
+        └─ f. 返回 post_id 给前端（不等 Fan-out 完成）
+        │
+        ▼
+④ Fan-out Worker 异步处理（topic_fanout 消费）
+        ├─ 读取 fanout_mode，按模式分发：
+        │
+        ├─ PushMode（普通用户，粉丝 ≤ 5000）：
+        │    a. 分页查 follow_relation_reverse（每页1000个粉丝）
+        │    b. 批量 ZADD inbox:{uid} score(publish_time) post_id（Pipeline）
+        │    c. 每页写完更新 fanout_task.pushed_fans + last_fan_uid（断点续传）
+        │    d. 异步写 user_inbox 冷数据表（双写一致性方案）
+        │
+        ├─ PullMode（超级大V，粉丝 > 100万）：
+        │    不写 inbox，仅更新 author_posts ZSet（让拉取时能找到此帖）
+        │
+        └─ HybridMode（中等大V，5000 < 粉丝 ≤ 100万）：
+             只推 30 天内活跃的粉丝（ZSET 维护活跃用户名单）
 
 关键：Fan-out 采用"令牌桶"控速，每个 Worker 处理速率上限 3.5万 ZADD/s，
       避免 Redis 集群瞬时写入过载
@@ -539,11 +566,25 @@ func getFanoutMode(authorUID int64) FanoutMode {
 ```
 写入策略：先 Redis 后 MySQL，异步补偿保证最终一致
 
-流程：
-  1. Fan-out Worker 批量 ZADD inbox:{uid}（Redis Pipeline）→ 立即返回成功
-  2. 写入成功的 post_id 列表发送到内部 channel（本地缓冲队列，容量10000）
-  3. 后台协程批量写 MySQL user_inbox（INSERT IGNORE，按 uid 聚合，每100条/批）
-  4. MySQL 写入失败：记录到本地失败日志（WAL文件），补偿协程每30s重试
+Fan-out Worker 写入链路
+        │
+        ▼
+① 批量 ZADD inbox:{uid}（Redis Pipeline）
+        ├─ 写入成功 → 用户立即可见（满足"Fan-out P99 < 3s"的 SLA）
+        └─ 写入失败 → 重试 ZADD 直到成功或超过阈值走降级
+        │
+        ▼
+② 写入成功的 post_id 列表发送到内部 channel
+        └─ 本地缓冲队列，容量10000，防止下游抖动反压上游
+        │
+        ▼
+③ 后台协程批量写 MySQL user_inbox
+        ├─ INSERT IGNORE，按 uid 聚合，每100条/批
+        └─ 写入失败 → 记录到本地失败日志（WAL文件）
+        │
+        ▼
+④ 补偿协程（每30s重试 WAL 中的失败记录）
+        └─ 最终保证 MySQL 与 Redis 一致
 
 一致性保证：
   - Redis 先写：用户立即可见（满足"Fan-out P99 < 3s"的 SLA）
@@ -646,31 +687,60 @@ func mergeBigVPosts(ctx context.Context, bigVUIDs []int64, cursor *FeedCursor, l
 **关注新用户后立即看到对方历史帖子：**
 
 ```
-关注操作触发：
-1. 写 follow_relation 正向表（同步，事务内）
-2. 发 Kafka topic_follow_action（异步完成以下操作）：
-   a. 写 follow_relation_reverse 反向表（最终一致，UNIQUE KEY幂等去重）
-   b. 更新关注图缓存（Redis ZADD follow:{follower} followee_uid，ZADD fans:{followee} follower_uid）
-   c. 修复 inbox（补历史帖子）
+关注操作入口
+        │
+        ▼
+① 同步写入（事务内）
+        └─ 写 follow_relation 正向表
+        │
+        ▼
+② 发 Kafka topic_follow_action（异步完成以下操作）
+        │
+        ▼
+③ Follow Worker 消费（异步处理）
+        ├─ a. 写 follow_relation_reverse 反向表
+        │    最终一致，UNIQUE KEY 幂等去重
+        │
+        ├─ b. 更新关注图缓存
+        │    ├─ Redis ZADD follow:{follower} followee_uid
+        │    └─ Redis ZADD fans:{followee} follower_uid
+        │
+        └─ c. 修复 inbox（补历史帖子）
+             ├─ 被关注者是普通用户（粉丝 ≤ 5000）：
+             │    ├─ 查被关注者最近 N 条帖子
+             │    │    ZRANGE author_posts:{followee} 0 N-1 WITHSCORES
+             │    ├─ 批量 ZADD inbox:{follower} 写入关注流
+             │    └─ N 取 20条（只补最近20条历史，不做全量回填）
+             │
+             └─ 被关注者是大V：
+                  ├─ 不补 inbox（拉取时实时合并）
+                  └─ 仅标记：SADD big_v_follows:{follower} followee_uid
+```
 
-Kafka 消费（Follow Worker）：
-  如果被关注者是普通用户（粉丝 ≤ 5000）：
-    - 查被关注者最近 N 条帖子（ZRANGE author_posts:{followee} 0 N-1 WITHSCORES）
-    - 批量 ZADD inbox:{follower} 写入关注流
-    - N 取 20条（只补最近20条历史，不做全量回填）
-  如果被关注者是大V：
-    - 不补 inbox（拉取时实时合并）
-    - 仅标记：SADD big_v_follows:{follower} followee_uid（记录关注了哪些大V）
+**取关操作：**
 
-取关操作触发：
-  同步：ZREM inbox:{follower} (对应被取关者的所有帖子)  ← 代价极高！
-  
-  正确做法（惰性清理）：
-    - 取关时只更新关系表和关注图缓存，不主动清 inbox
-    - 拉取时过滤：取出 inbox 中帖子的 author_uid，与当前关注列表比对，
-      不在关注列表的帖子在展示层过滤掉（不删除，惰性过期）
-    - inbox 条目最长保留 7天，超期自动 TTL 清理
-    - 如果用户强烈要求"立即不可见"，发 Kafka 异步清理（非同步路径）
+```
+取关操作入口
+        │
+        ▼
+① 同步更新关系表和关注图缓存
+        ├─ 写 follow_relation（status=取消）
+        ├─ ZREM follow:{follower} followee_uid
+        └─ ZREM fans:{followee} follower_uid
+        │
+        ▼
+② inbox 惰性清理（不同步删除，代价太高）
+        ├─ 不主动 ZREM inbox:{follower}（全量删除代价 O(N) 不可接受）
+        │
+        ├─ 正确做法：拉取时过滤
+        │    ├─ 取出 inbox 中帖子的 author_uid
+        │    ├─ 与当前关注列表比对
+        │    └─ 不在关注列表的帖子 → 展示层过滤掉（不删除，惰性过期）
+        │
+        ├─ inbox 条目最长保留 7天，超期自动 TTL 清理
+        │
+        └─ 如果用户强烈要求"立即不可见"
+             └─ 发 Kafka 异步清理（非同步路径）
 ```
 
 ---
