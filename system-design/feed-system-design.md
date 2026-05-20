@@ -127,12 +127,14 @@ Feed 拉取验证：
 - **基础热数据合计**：1TB(inbox) + 100GB(帖子) + 37GB(推荐) + 75GB(关注图) ≈ **1.2 TB**
 - **加主从复制缓冲（10%）+ 内存碎片（15%）+ 扩容余量（25%）**：1.2TB × 1.5 ≈ 1.8 TB，保守规划 **3 TB**
 
-**DB 分库分表：**
-- **MySQL 单主库安全写入上限**：保守取 **3000 TPS**
-- **帖子主表**：10万 TPS（发帖直写）÷ 3000 = 34，取 **64库**，分1024表（按 post_id 分片）
-- **关注关系正向表**：按 follower_uid 分片，取 **32库**，分256表（查"我关注了谁"单库完成）
-- **关注关系反向表**：按 followee_uid 分片，取 **32库**，分256表（Fan-out查粉丝列表单库完成）
-- **用户 inbox 冷数据表**（Redis 未覆盖的历史数据）：取 **32库**，分256表（按 uid 分片）
+**存储集群规划：**
+- **MongoDB 帖子集群（分片规划）**：
+  - MongoDB 单分片安全写入上限：约 **5万 TPS**（WiredTiger 引擎，16核32G + NVMe SSD）
+  - 帖子写入：10万 TPS（发帖直写）÷ 5万 = 2，取 **8分片**（4倍冗余，每分片 1主2从，按 post_id 哈希分片）
+  - 帖子读取：热帖 99% 走 Redis 缓存，穿透到 MongoDB 的 QPS 极低
+- **MySQL 关注关系正向表**：按 follower_uid 分片，取 **32库**，分256表（查"我关注了谁"单库完成）
+- **MySQL 关注关系反向表**：按 followee_uid 分片，取 **32库**，分256表（Fan-out查粉丝列表单库完成）
+- **MySQL 用户 inbox 冷数据表**（Redis 未覆盖的历史数据）：取 **32库**，分256表（按 uid 分片）
 
 **Kafka 集群：**
 - **单 Broker 单分区安全吞吐**：约 **5万条/s**（1KB消息，NVMe SSD，异步刷盘）
@@ -157,10 +159,10 @@ Feed 拉取验证：
 |---------|------|---------|---------|
 | 应用服务器（8C16G） | 5850台 | 5万/台/年（含运维） | **2.9亿** |
 | Redis（64G内存，主从） | 768×3=2304实例 | 8万/台/年 | **1.8亿** |
-| MySQL（高IO型） | 160主+320从=480台 | 10万/台/年 | **0.5亿** |
+| MongoDB（帖子集群）+ MySQL（关注/Inbox） | MongoDB 8分片×3=24实例 + MySQL 96主+192从 | 10万/台/年 | **0.3亿** |
 | Kafka + HBase + ES | 约100台 | 8万/台/年 | **0.08亿** |
 | 网络带宽（400Gbps出口） | 专线+CDN | — | **0.5亿** |
-| **合计** | — | — | **≈ 5.8亿/年** |
+| **合计** | — | — | **≈ 5.6亿/年** |
 
 > 成本优化方向：① Fan-out Worker 峰谷弹性伸缩（HPA），非高峰期缩容60%节省1.2亿；② Redis inbox 对非活跃用户（30天未登录）不预分配ZSet，节省40%内存；③ 推荐服务 GPU 推理替代 CPU，1500台降至300台 GPU 机器。
 
@@ -172,16 +174,16 @@ Feed 拉取验证：
 
 > 说明：Feed 流系统是**最典型的 CQRS + 事件驱动架构**——"发帖"是极简的写路径（Post 入库+发事件），而"Fan-out 写扩散/拉取读扩散/推荐算法"等所有复杂性都在读路径。用户看到的 Feed 从来不是某张表，而是由多个读模型（Inbox/RecommendFeed）在请求时聚合而成。因此这里不按 DDD 聚合组织，而是按"实体（Entity）/ 事件（Event）/ 读模型（Read Model）"三类梳理。
 
-#### 3.1.1 ① 实体（Entity，写模型）
+**3.1.1 ① 实体（Entity，写模型）**
 
 | 模型 | 职责 | 核心属性 | 核心行为 | 存储位置 |
 |------|------|---------|---------|---------|
-| **Post** 帖子 | 帖子全生命周期：草稿→发布→审核→可见→删除 | 帖子ID、作者ID、内容、媒体URL列表、可见性（公开/关注/私密）、状态、发布时间 | 发布、删除、修改可见性、审核状态变更 | MySQL 按 `post_id` 分库分表（写权威）+ Redis 帖子内容缓存 |
+| **Post** 帖子 | 帖子全生命周期：草稿→发布→审核→可见→删除 | 帖子ID、作者ID、内容、媒体URL列表、可见性（公开/关注/私密）、状态、发布时间 | 发布、删除、修改可见性、审核状态变更 | MongoDB 按 `post_id` 哈希分片（写权威，帖子内容图文混排/话题标签等灵活字段天然适配文档模型）+ Redis 帖子内容缓存 |
 | **Follow** 关注关系 | 用户间关注关系图 | 关注者ID、被关注者ID、关注时间、关系状态 | 关注、取关、查粉丝列表、查关注列表 | MySQL 正向表（follower_uid分片，查关注列表）+ 反向表（followee_uid分片，查粉丝列表）+ Redis 关注集合缓存 |
 
 > Feed 领域真正的写实体只有两个：`Post`（内容）和 `Follow`（关系图）。其他"模型"本质上都是由这两个实体衍生出来的事件或视图。特别要注意：**UserInbox 不是实体**——它不存储业务事实，只存储 `post_id` 引用，完全可以由 `Post + Follow` 重新物化。
 
-#### 3.1.2 ② 事件（Event，事件流）
+**3.1.2 ② 事件（Event，事件流）**
 
 | 模型 | 职责 | 核心属性 | 触发时机 | 下游消费 |
 |------|------|---------|---------|---------|
@@ -191,7 +193,7 @@ Feed 拉取验证：
 
 > `PostPublished` 是 Feed 领域**最重要的一个事件**——它触发了整个 Fan-out 流程（推模型的扩散点、大 V 拉模型的跳过点），是整条 CQRS 链路的发令枪。所有复杂的 Fan-out Worker、推拉切换、补偿重试都是这个事件的消费链。
 
-#### 3.1.3 ③ 读模型 / 物化视图（Read Model，查询侧）
+**3.1.3 ③ 读模型 / 物化视图（Read Model，查询侧）**
 
 | 模型 | 职责 | 核心属性 | 生成方式 | 一致性要求 |
 |------|------|---------|---------|-----------|
@@ -205,7 +207,7 @@ Feed 拉取验证：
 > - **推拉混合的本质**：UserInbox 只装普通用户的推送内容（推模型），大 V 的帖子不 Fan-out 到 UserInbox，拉取时从 AuthorPostsView 实时 N 路归并补上（拉模型）
 > - **RecommendFeed 与 UserInbox 是两个完全独立的读模型**，最终在"Feed 聚合服务"层按比例（60/20/20）交织返回给用户
 
-#### 3.1.4 ④ 流程控制 / 补偿（非领域模型，是基础设施）
+**3.1.4 ④ 流程控制 / 补偿（非领域模型，是基础设施）**
 
 | 模型 | 职责 | 说明 |
 |------|------|------|
@@ -213,7 +215,7 @@ Feed 拉取验证：
 
 > 把 FanoutTask 单独列出是为了说明：它不是领域模型，不该和 Post/Follow 并列。这类"任务表"在各大系统中都存在（类似秒杀的 `seckill_transaction`、红包的 `send_transaction`），归属基础设施层。
 
-#### 3.1.5 模型关系图
+**3.1.5 模型关系图**
 
 ```
   [写路径]                      [事件流]                         [读路径]
@@ -245,27 +247,40 @@ Feed 拉取验证：
 
 ```sql
 -- =====================================================
--- 帖子主表（按 post_id % 64 分64库，% 1024 分1024表）
--- post_id 使用雪花算法，高位含时间戳，天然有序
+-- 帖子主集合（MongoDB，按 post_id 哈希分片）
+-- 业界最佳实践：帖子内容图文混排、话题标签、投票、位置等灵活字段
+-- 文档模型天然适配，无需 JSON 列或频繁 ALTER TABLE
 -- =====================================================
-CREATE TABLE post (
-  post_id       BIGINT       NOT NULL  COMMENT '雪花ID（含时间戳）',
-  author_uid    BIGINT       NOT NULL  COMMENT '作者uid',
-  content       TEXT         DEFAULT NULL COMMENT '文本内容（媒体走OSS）',
-  media_type    TINYINT      NOT NULL DEFAULT 0 COMMENT '0纯文字 1图片 2视频 3混合',
-  media_keys    JSON         DEFAULT NULL COMMENT 'OSS对象Key列表',
-  topic_ids     JSON         DEFAULT NULL COMMENT '话题Tag ID列表',
-  visibility    TINYINT      NOT NULL DEFAULT 1 COMMENT '0草稿 1公开 2仅关注者 3私密',
-  status        TINYINT      NOT NULL DEFAULT 0 COMMENT '0审核中 1正常 2违规下架 3用户删除',
-  like_count    BIGINT       NOT NULL DEFAULT 0 COMMENT '点赞数（异步更新，允许延迟）',
-  comment_count BIGINT       NOT NULL DEFAULT 0 COMMENT '评论数（异步更新）',
-  share_count   BIGINT       NOT NULL DEFAULT 0 COMMENT '转发数',
-  publish_time  DATETIME     NOT NULL  COMMENT '发布时间',
-  delete_time   DATETIME     DEFAULT NULL COMMENT '删除时间（软删除）',
-  PRIMARY KEY (post_id),
-  KEY idx_author_time (author_uid, publish_time DESC) COMMENT '查用户帖子列表',
-  KEY idx_status_time (status, publish_time DESC)     COMMENT '审核队列扫描'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='帖子主表';
+
+// MongoDB Collection: post
+// sh.shardCollection("feed.post", { post_id: "hashed" })
+
+// 文档结构
+{
+  _id: ObjectId("..."),
+  post_id: NumberLong(xxx),           // 雪花ID（含时间戳，天然有序）
+  author_uid: NumberLong(xxx),        // 作者uid
+  content: "帖子文本内容...",          // 文本内容
+  media_type: 1,                      // 0纯文字 1图片 2视频 3混合
+  media_keys: ["oss://img/a.jpg", "oss://img/b.jpg"],  // OSS对象Key列表
+  topic_ids: [10001, 10002],          // 话题Tag ID列表
+  // 文档模型优势：灵活扩展，无需 DDL 变更
+  // location: { lat: 39.9, lng: 116.4, name: "北京" },  // 位置信息（LBS帖子）
+  // poll: { options: [...], end_time: ... },             // 投票功能
+  // mentions: [uid1, uid2],                             // @用户列表
+  visibility: 1,                      // 0草稿 1公开 2仅关注者 3私密
+  status: 1,                          // 0审核中 1正常 2违规下架 3用户删除
+  like_count: NumberLong(0),          // 点赞数（冗余，Redis为权威）
+  comment_count: NumberLong(0),       // 评论数
+  share_count: NumberLong(0),         // 转发数
+  publish_time: ISODate("2026-01-15T10:30:00Z"),
+  delete_time: null                   // 软删除时间
+}
+
+// 索引设计
+db.post.createIndex({ author_uid: 1, publish_time: -1 })  // 查用户帖子列表
+db.post.createIndex({ status: 1, publish_time: -1 })       // 审核队列扫描
+db.post.createIndex({ topic_ids: 1, publish_time: -1 })    // 话题帖子列表（多值索引）
 
 
 -- =====================================================
@@ -405,7 +420,7 @@ flowchart TD
     end
 
     subgraph 存储层
-        DB_POST["MySQL 帖子库\n64主128从"]
+        DB_POST["MongoDB 帖子集群\n32分片×1主2从"]
         DB_FOLLOW["MySQL 关注库\n32主64从"]
         DB_INBOX["MySQL Inbox冷库\n32主64从"]
         OSS["对象存储 OSS\n图片/视频媒体文件"]
@@ -464,7 +479,7 @@ flowchart TD
 
 **三、中间件层**：Redis 按用途物理隔离（inbox/帖子缓存/关注图/推荐缓存四集群），Kafka 承载所有异步事件，ETCD 动态配置。
 
-**四、存储层**：MySQL 多套分库分表，OSS 存媒体，ES 支持搜索，HBase 归档冷 Feed 数据。
+**四、存储层**：MongoDB 存帖子内容（文档模型适配图文混排/灵活字段），MySQL 存关注关系+Inbox冷数据（强一致+唯一约束），OSS 存媒体，ES 支持搜索，HBase 归档冷 Feed 数据。
 
 ---
 
@@ -767,8 +782,9 @@ L2 Redis 集群（分布式，毫秒级）：
    └── reco:{uid}                  ZSet   推荐流预生成列表（score=rank_score），最多50条
    └── 命中率目标：99%+
 
-L3 MySQL / HBase（最终持久化）：
-   └── MySQL: 最近3000条 inbox，关注关系，帖子主数据
+L3 MongoDB / MySQL / HBase（最终持久化）：
+   └── MongoDB: 帖子主数据（文档模型，按 post_id 哈希分片）
+   └── MySQL: 最近3000条 inbox，关注关系
    └── HBase: 3000条以外的历史 Feed，按(uid, score)设计 RowKey
 
 CDN（媒体内容）：
@@ -1052,7 +1068,7 @@ feed.big_v.delay_seconds: 300            # 大V发帖延迟分发时间
 | Redis inbox 单分片宕机 | 哨兵切换（<30s），该分片用户临时走拉模型 | 自动恢复 |
 | Redis inbox 集群全挂 | 全切 DB 拉模型（SQL 查关注用户帖子） | 手动恢复 |
 | Kafka Fan-out 宕机 | 发帖写 DB，fanout_task 兜底，MQ 恢复后重放 | 手动恢复 |
-| DB 帖子库宕机 | 帖子缓存继续提供服务，停止发帖，只读 | 自动恢复 |
+| DB 帖子库宕机 | 帖子缓存继续提供服务，停止发帖，只读 | MongoDB 副本集自动选主恢复 |
 | 推荐服务宕机 | Feed 降级为纯关注流（无推荐混入） | 自动恢复 |
 | 大V发帖触发 Fan-out 雪崩 | 自动切拉模型（ETCD 实时调整阈值为0） | 手动恢复正常阈值 |
 
@@ -1072,7 +1088,29 @@ feed.big_v.delay_seconds: 300            # 大V发帖延迟分发时间
   - 扩容时 Kafka Rebalance 期间 Fan-out 会短暂停顿（15s），可接受
 ```
 
-### 10.2 Redis inbox 集群扩容
+### 10.2 MongoDB 帖子集群扩容
+
+```
+当前：8分片（帖子集群），每分片 1主2从 = 24 实例
+触发：单分片存储 > 2TB 或写 QPS > 安全水位 70%
+
+扩容方式（MongoDB 原生，无需中间件）：
+  ① 在线加分片：sh.addShard("shard-new:27017")
+     - balancer 自动将负载高的 chunk 迁移到新分片
+     - 迁移期间读写正常，chunk 迁移锁定毫秒级
+     - 全程业务零感知，无双写/路由切换
+  
+  ② 对比 MySQL 帖子库扩容（64库→128库）：
+     - MySQL：需双写窗口（1周）+ 路由规则切换 + 历史数据迁移
+     - MongoDB：sh.addShard 一行命令，balancer 全自动完成
+  
+  ③ 预案：
+     - 帖子增长到 1000亿条时，从 8分片 扩至 16分片
+     - 扩容前对热门作者 post_id 预分裂 chunk（避免大V帖子集中）
+     - 大型事件前 72h 完成扩容 + 压测验证
+```
+
+### 10.3 Redis inbox 集群扩容
 
 ```
 当前：768分片（inbox 集群）→ 扩容至 1536 分片（DAU增长或峰值超预期时）
@@ -1091,7 +1129,7 @@ ZSet 迁移注意事项（与普通 String 不同）：
   4. 迁移完成后，本地缓存 TTL 延长（避免扩容后瞬时读 Redis 洪峰）
 ```
 
-### 10.3 关注图从 Redis 迁移到图数据库
+### 10.4 关注图从 Redis 迁移到图数据库
 
 ```
 当前：关注关系存 MySQL，热数据缓存到 Redis ZSet（fans:{uid}）
@@ -1111,7 +1149,7 @@ ZSet 迁移注意事项（与普通 String 不同）：
   4. 下线：MySQL 关注表降为只读归档
 ```
 
-### 10.4 Feed 冷热分层存储
+### 10.5 Feed 冷热分层存储
 
 ```
 热数据（0~100条）   : Redis inbox ZSet（实时拉取，< 2ms）

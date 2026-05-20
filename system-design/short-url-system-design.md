@@ -13,10 +13,10 @@
 | 4 | **跳转默认 302** | 302（临时重定向），而非 301（永久） | 统计准确性优先：302每次到服务器可记录点击；301浏览器缓存后点击数据丢失且封禁无法生效 |
 | 5 | **号段双 Buffer** | 当前号段用到80%时异步预取下一号段 | 消除号段耗尽时的阻塞等待，宕机平均浪费从50%降至10%，进一步减少号段空间浪费 |
 | 6 | **singleflight 防缓存击穿** | 同一 short_code 的并发 DB 查询合并为1次 | 热点短链缓存到期瞬间，N个并发只有1个真正打 DB，其余等待同一结果 |
-| 7 | **点击统计完全异步化** | 点击→本地 channel→批量 MQ→消费者聚合写 DB | 跳转链路 P99 不受统计写入影响；100万 QPS × 100B 如果同步写DB需67个主库 |
+| 7 | **点击统计完全异步化** | 点击→本地 channel→批量 Kafka→Flink 聚合写 ClickHouse | 跳转链路 P99 不受统计写入影响；Kafka 高吞吐日志流 + ClickHouse 列存天然适配海量点击明细 OLAP 分析 |
 | 8 | **TTL 随机抖动** | Redis TTL = 7天 + rand(0,1天)；本地缓存 TTL = 10s + rand(0,5s) | 防止同批次生成的短链同时过期引发缓存雪崩，写入量波峰平滑化 |
 | 9 | **IP 404 计数熔断** | 单IP每分钟404次数>50 → 拉黑1小时 | 布隆误判率0.1%，枚举攻击时穿透量=枚举QPS×0.1%，限流从源头拦截而非被动承压 |
-| 10 | **点击统计冷热分层** | 热数据（0-30天）MySQL；温数据（30天-1年）ClickHouse；冷数据（1年+）OSS Parquet | MySQL 只保30天热数据量级从5PB/3年降至140GB，ClickHouse 列存支持高效 OLAP 分析 |
+| 10 | **点击统计冷热分层** | 热数据（0-1年）ClickHouse；冷数据（1年+）OSS Parquet | ClickHouse 列存压缩比 10:1，500亿次/天点击明细直接写入，支持秒级 OLAP 分析；冷数据归档 OSS 降成本 |
 
 ---
 
@@ -91,9 +91,9 @@ Base62 8位空间：62⁸ ≈ 218万亿 >> 2000亿 ✓（不会枯竭）
 | 数据 | 计算过程 | 估算结果 | 说明 |
 |------|---------|---------|------|
 | 短链映射表 | 2000亿条 × 200B/条 ÷ 1024⁴（1024⁴ = 1TB，将 B 转换为 TB） | **≈ 36 TB** | 含 short_code/long_url/uid/expire/status 等字段 |
-| 点击统计表 | 500亿次/天 × 100B/条 ÷ 1024⁴ × 365天 × 3年 | **≈ 5 PB/3年** | 明细数据，需冷热分层，热数据仅保留 30天 |
+| 点击统计表（ClickHouse） | 500亿次/天 × 100B/条 × 365天 × 3年 ÷ 1024⁴ × 0.1（列存压缩比） | **≈ 500 TB/3年** | ClickHouse 列存压缩比约 10:1，直接承载全量热+温数据 |
 | Redis 热数据 | 见下方拆解 | **≈ 200 GB** | 热点短链缓存 + 布隆过滤器 + 计数器 |
-| MQ 消息 | 100万/s × 200B/条 × 86400s × 3天 ÷ 1024⁴ | **≈ 52 TB/3天** | 点击事件消息，消费后删除，保留 3天 |
+| MQ 消息（Kafka） | 100万/s × 200B/条 × 86400s × 3天 ÷ 1024⁴ | **≈ 52 TB/3天** | 点击事件消息，消费后过期，保留 3天 |
 
 **Redis 热数据拆解：**
 - **活跃短链估算**：2000亿条存量，遵循二八法则，20% 的短链（400亿条）贡献 80% 流量；但缓存仅需存热点，按 LRU 缓存最近 7 天活跃的 10亿条
@@ -109,9 +109,10 @@ Base62 8位空间：62⁸ ≈ 218万亿 >> 2000亿 ✓（不会枯竭）
   - 单库均摊 TPS：1万 ÷ 4 = **2500 TPS**（低于 3000 安全上限 ✓）
   - 分256表：按 short_code 前2位哈希，均匀分表
 - **点击统计**：
-  - 峰值 100万次/s，不能直写 DB，MQ 削峰后消费侧写入目标：**5万 TPS**
-  - 所需分库数：5万 ÷ 3000 ≈ 17，取 **32库**（统计数据量大，多分库）
-  - 单库均摊 TPS：5万 ÷ 32 = **1563 TPS**（充裕 ✓）
+  - 峰值 100万次/s，不能直写存储，Kafka 削峰后 Flink 消费写入 ClickHouse
+  - ClickHouse 单节点写入吞吐约 50万行/s（MergeTree 引擎，批量写入）
+  - 所需节点数：100万 ÷ 50万 = 2，取 **4节点**（2倍冗余，3副本 ReplicatedMergeTree）
+  - 集群配置：4节点 × 32核64G + NVMe SSD，分布式表按 toYYYYMM(click_time) 分区
 
 **Redis 集群：**
 - **Redis 单分片安全 QPS 上限**：**10万 QPS**
@@ -128,17 +129,22 @@ Base62 8位空间：62⁸ ≈ 218万亿 >> 2000亿 ✓（不会枯竭）
 |------|-------------|------|---------|-----------|--------|
 | 跳转服务 | 8000 | 本地缓存命中直接返回，极轻逻辑，主要是内存查找+302响应 | 100万 | 100万 ÷ (8000 × 0.7) ≈ 179 | **取200台** |
 | 生成服务 | 800 | 含唯一码生成 + DB 事务 + Redis 写入 + 布隆过滤器更新，链路较重 | 1万 | 1万 ÷ (800 × 0.7) ≈ 18 | **取30台** |
-| 统计消费服务 | 3000（MQ消费+批量写DB） | MQ消费 + 批量聚合写入，IO密集 | 5万（消费侧） | 5万 ÷ (3000 × 0.7) ≈ 24 | **取40台** |
+| 统计消费服务（Flink） | 3000（Kafka消费+批量写ClickHouse） | Kafka消费 + Flink聚合 + 批量写入ClickHouse，IO密集 | 5万（消费侧） | 5万 ÷ (3000 × 0.7) ≈ 24 | **取40台** |
 | 管理/查询服务 | 5000 | 读缓存为主，管理操作低频 | 10万 | 10万 ÷ (5000 × 0.7) ≈ 29 | **取40台** |
 
 > 冗余系数统一取 **0.7**：节点负载不超过 70%，预留 GC 停顿、流量毛刺、节点故障摘流余量。
 
-**RocketMQ 集群（点击事件消息）：**
-- **单 Broker 主节点安全吞吐**：约 10万条/s 写入（8核16G + NVMe SSD，异步刷盘）
-- **所需主节点数**：100万条/s ÷ 10万条/s/节点 = 10，取 **16主节点**（1.6倍冗余 + 跨可用区）
-- **从节点**：每主配1从，共 **16从节点**，故障自动切换
-- **NameServer**：**4节点**（4核8G），对等部署，任意宕机2台仍可服务
-- 点击统计 Topic 异步刷盘（性能优先，允许极少量丢失），生成/删除事件 Topic 同步刷盘
+**Kafka 集群（点击事件日志流）：**
+- **单 Broker 安全吞吐**：约 20万条/s 写入（16核32G + NVMe SSD，batch + 异步复制）
+- **所需 Broker 数**：100万条/s ÷ 20万条/s/节点 = 5，取 **8节点**（1.6倍冗余 + 跨可用区）
+- **副本因子**：3（ISR 机制保证高可用，任意宕机1节点数据不丢）
+- **分区数**：topic_click_event 128 分区（匹配下游 Flink 并行度）
+- 点击事件 acks=1（高吞吐优先，允许极少量丢失）；生成/删除事件走 RocketMQ 事务消息
+
+**RocketMQ 集群（事务消息/缓存失效广播）：**
+- **场景**：短链生成事件（需事务消息保证与DB一致）、缓存失效广播（需广播语义）
+- **配置**：4主4从 + 3个 NameServer（事务消息量远小于点击流，无需大规模集群）
+- 同步刷盘，保证消息可靠性
 
 ---
 
@@ -148,7 +154,7 @@ Base62 8位空间：62⁸ ≈ 218万亿 >> 2000亿 ✓（不会枯竭）
 
 > 说明：短链系统是典型的"一写多读 + 异步统计"场景——核心写路径极简（只写一张 `ShortUrl` 实体表），读路径 99% 走缓存，访问统计靠事件驱动异步聚合。因此这里不按 DDD 聚合组织，而是按"实体（Entity）/ 事件（Event）/ 读模型（Read Model）"三类梳理，更贴近真实架构职责。
 
-#### ① 实体（Entity，写模型）
+**① 实体（Entity，写模型）**
 
 | 模型 | 职责 | 核心属性 | 核心行为 | 存储位置 |
 |------|------|---------|---------|---------|
@@ -156,25 +162,25 @@ Base62 8位空间：62⁸ ≈ 218万亿 >> 2000亿 ✓（不会枯竭）
 
 > 短链只有这一个核心实体，其他字段（访问次数 `visit_count`）是异步更新的冗余统计，由事件驱动。
 
-#### ② 事件（Event，事件流）
+**② 事件（Event，事件流）**
 
 | 模型 | 职责 | 核心属性 | 触发时机 | 下游消费 |
 |------|------|---------|---------|---------|
-| **UrlVisited** 访问事件 | 每次短链点击产生一条事件，作为 PV/UV/地域分析的数据源 | 日志ID、短码、来源IP、User-Agent、Referer、国家/地域、时间戳 | 302 跳转成功后异步 MQ 发送 | ① 落 `visit_log` 表（原始明细）② 驱动 `ShortUrlStat` 读模型实时聚合 ③ 离线数仓归档分析 |
+| **UrlVisited** 访问事件 | 每次短链点击产生一条事件，作为 PV/UV/地域分析的数据源 | 日志ID、短码、来源IP、User-Agent、Referer、国家/地域、时间戳 | 302 跳转成功后异步 Kafka 发送 | ① 落 ClickHouse `visit_log` 表（原始明细）② 驱动 `ShortUrlStat` 物化视图实时聚合 ③ 离线数仓归档分析 |
 | **UrlBlocked** 封禁事件 | 短链被封禁/解封时触发 | 短码、封禁原因、操作人、封禁时间、动作（封/解封） | 运营/风控操作触发 | ① 落 `block_record` 表（审计）② 主动失效 Redis 缓存 ③ 通知创建者 |
 
 > 事件是**追加写、不可变的事实记录**，通过 MQ 解耦写路径与下游物化。封禁事件特别重要：违规短链必须 1s 内全节点不可访问。
 
-#### ③ 读模型 / 物化视图（Read Model，查询侧）
+**③ 读模型 / 物化视图（Read Model，查询侧）**
 
 | 模型 | 职责 | 核心属性 | 生成方式 | 一致性要求 |
 |------|------|---------|---------|-----------|
-| **ShortUrlStat** 访问统计视图 | 短链维度的 PV/UV/今日访问 | 短码、总访问量（PV）、独立访客数（UV，HyperLogLog）、今日访问量、最后点击时间 | Flink 消费 UrlVisited 事件流，秒级聚合 + Redis HyperLogLog 统计 UV | 最终一致（秒级延迟可接受） |
+| **ShortUrlStat** 访问统计视图 | 短链维度的 PV/UV/今日访问 | 短码、总访问量（PV）、独立访客数（UV，HyperLogLog）、今日访问量、最后点击时间 | Flink 消费 UrlVisited 事件流，秒级聚合写入 ClickHouse 物化视图 + Redis HyperLogLog 统计实时 UV | 最终一致（秒级延迟可接受） |
 | **UrlIdempotentIndex** 幂等索引 | 长 URL → 短码的反查索引，防重复生成 | 长URL的SHA256哈希、短码 | ShortUrl 创建时同步写入（事务内），唯一键约束 | 强一致（与主表同事务） |
 
 > `UrlIdempotentIndex` 本质是 `ShortUrl` 的**辅助索引**，不是独立聚合，归入读模型是为了突出它"用来查"的职责。`ShortUrlStat` 完全可以从事件流重建，这是读模型的核心特征。
 
-#### 模型关系图
+**模型关系图**
 
 ```
   [写路径]                      [事件]                    [读路径]
@@ -239,41 +245,57 @@ CREATE TABLE url_idempotent (
 
 
 -- =====================================================
--- 访问日志表（按 short_code 分32库256表，时序数据）
--- 热数据保留30天，定期归档到冷存储
+-- 访问日志表（ClickHouse，ReplicatedMergeTree 引擎）
+-- 按月分区，TTL 1年自动归档到 OSS 冷存储
 -- =====================================================
-CREATE TABLE visit_log (
-  id            BIGINT       NOT NULL AUTO_INCREMENT,
-  short_code    VARCHAR(8)   NOT NULL,
-  ip            VARCHAR(45)  NOT NULL COMMENT 'IPv4/IPv6',
-  ip_country    VARCHAR(64)  DEFAULT NULL COMMENT 'IP归属国家',
-  ip_region     VARCHAR(64)  DEFAULT NULL COMMENT 'IP归属省份',
-  user_agent    VARCHAR(512) DEFAULT NULL,
-  referer       VARCHAR(512) DEFAULT NULL COMMENT '来源页面',
-  device_type   TINYINT      DEFAULT NULL COMMENT '1PC 2移动 3平板',
-  click_time    DATETIME     NOT NULL    COMMENT '点击时间',
-  PRIMARY KEY (id),
-  KEY idx_code_time (short_code, click_time) COMMENT '短链访问趋势查询'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='访问日志表'
-  PARTITION BY RANGE (TO_DAYS(click_time)) (
-    PARTITION p_current VALUES LESS THAN (TO_DAYS('2025-01-01')),
-    PARTITION p_future   VALUES LESS THAN MAXVALUE
-  );
+-- ClickHouse DDL（非 MySQL）：
+-- CREATE TABLE visit_log ON CLUSTER '{cluster}'
+-- (
+--   id            UInt64       COMMENT '雪花算法生成',
+--   short_code    String       COMMENT '短码',
+--   ip            String       COMMENT 'IPv4/IPv6',
+--   ip_country    LowCardinality(String) DEFAULT '' COMMENT 'IP归属国家',
+--   ip_region     LowCardinality(String) DEFAULT '' COMMENT 'IP归属省份',
+--   user_agent    String       DEFAULT '' COMMENT 'User-Agent',
+--   referer       String       DEFAULT '' COMMENT '来源页面',
+--   device_type   UInt8        DEFAULT 0  COMMENT '1PC 2移动 3平板',
+--   click_time    DateTime     COMMENT '点击时间'
+-- ) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/visit_log', '{replica}')
+-- PARTITION BY toYYYYMM(click_time)
+-- ORDER BY (short_code, click_time)
+-- TTL click_time + INTERVAL 1 YEAR TO VOLUME 'cold'
+-- SETTINGS index_granularity = 8192;
+--
+-- 选型理由：
+-- - 500亿次/天点击明细是典型 OLAP 场景，MySQL 行存无法承载
+-- - ClickHouse 列存压缩比约 10:1，3年数据仅需 ~500TB（MySQL 需 5PB）
+-- - ORDER BY (short_code, click_time) 加速按短码+时间范围的趋势查询
+-- - LowCardinality 对低基数字段（国家、省份）压缩率极高
+-- - TTL 自动管理冷数据迁移到 OSS Volume，无需人工归档任务
 
 
 -- =====================================================
--- 短链统计表（按 short_code 分4库64表）
--- 聚合指标，MQ消费者异步更新
+-- 短链统计物化视图（ClickHouse，自动增量聚合）
+-- 基于 visit_log 实时聚合，无需手动 UPDATE
 -- =====================================================
-CREATE TABLE short_url_stat (
-  short_code    VARCHAR(8)   NOT NULL,
-  total_pv      BIGINT       NOT NULL DEFAULT 0 COMMENT '总访问量',
-  today_pv      INT          NOT NULL DEFAULT 0 COMMENT '今日访问量（每日清零）',
-  total_uv      BIGINT       NOT NULL DEFAULT 0 COMMENT '总独立访客（去重UV）',
-  last_click_at DATETIME     DEFAULT NULL COMMENT '最后一次点击时间',
-  update_time   DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (short_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='短链统计表';
+-- ClickHouse DDL（非 MySQL）：
+-- CREATE MATERIALIZED VIEW short_url_stat_mv ON CLUSTER '{cluster}'
+-- ENGINE = ReplicatedAggregatingMergeTree('/clickhouse/tables/{shard}/short_url_stat_mv', '{replica}')
+-- ORDER BY (short_code)
+-- AS SELECT
+--   short_code,
+--   count()                          AS total_pv,
+--   uniqState(ip)                    AS uv_state,
+--   max(click_time)                  AS last_click_at
+-- FROM visit_log
+-- GROUP BY short_code;
+--
+-- 选型理由：
+-- - 物化视图自动增量聚合，写入 visit_log 时自动更新统计，无需消费者手动 UPDATE
+-- - uniqState 使用 HyperLogLog 算法，UV 误差 < 1%，内存固定
+-- - 查询时用 uniqMerge(uv_state) 获取 UV 值
+-- - 实时 PV/UV 查询 P99 < 50ms（ClickHouse 亿级聚合能力）
+-- - Redis HyperLogLog 仅作为秒级实时 UV 的补充（物化视图有数秒延迟）
 
 
 -- =====================================================
@@ -317,7 +339,7 @@ flowchart TD
     subgraph 应用层
         SVC_REDIRECT["跳转服务\n本地缓存 go-cache TTL=10s"]
         SVC_CREATE["生成服务\n号段预取 + 布隆过滤器"]
-        SVC_STAT["统计消费服务\nMQ消费 + 批量聚合写DB"]
+        SVC_STAT["统计消费服务\nFlink消费Kafka + 写ClickHouse"]
         SVC_ADMIN["管理查询服务"]
     end
 
@@ -325,19 +347,21 @@ flowchart TD
         subgraph Redis集群
             REDIS_URL["跳转缓存集群\n8分片 x 1主2从"]
             REDIS_BLOOM["布隆过滤器集群\n2分片 x 1主2从"]
-            REDIS_COUNTER["计数器集群\n4分片 x 1主2从\n实时PV滑动窗口"]
+            REDIS_COUNTER["计数器集群\n4分片 x 1主2从\n实时PV/UV（HyperLogLog）"]
         end
-        MQ["RocketMQ 集群\n16主16从 + 4个NameServer\n点击事件异步消费"]
+        KAFKA["Kafka 集群\n8 Broker x 3副本\n点击事件日志流 128分区"]
+        RMQ["RocketMQ 集群\n4主4从 + 3个NameServer\n事务消息/缓存失效广播"]
+        FLINK["Flink 流处理\n消费 Kafka → 写 ClickHouse"]
         ETCD["ETCD\n配置中心 / 服务注册发现\n号段分配协调"]
     end
 
     subgraph 存储层
         DB_URL["MySQL 短链库\n4主8从"]
         DB_IDEM["MySQL 幂等库\n4主8从"]
-        DB_STAT["MySQL 统计库\n32主64从"]
+        CH["ClickHouse 集群\n4节点 x 3副本\n点击明细 + 统计物化视图"]
         ELK["ELK 日志集群"]
         PROM["Prometheus + Grafana"]
-        OSS["对象存储 OSS\n冷数据归档"]
+        OSS["对象存储 OSS\n冷数据归档（1年+）"]
     end
 
     User --> LVS --> GW
@@ -347,28 +371,31 @@ flowchart TD
 
     SVC_REDIRECT --> REDIS_URL
     SVC_REDIRECT --> REDIS_BLOOM
-    SVC_REDIRECT --> MQ
+    SVC_REDIRECT --> KAFKA
 
     SVC_CREATE --> REDIS_URL
     SVC_CREATE --> REDIS_BLOOM
     SVC_CREATE --> DB_URL
     SVC_CREATE --> DB_IDEM
     SVC_CREATE --> ETCD
+    SVC_CREATE --> RMQ
 
-    MQ --> SVC_STAT
-    SVC_STAT --> DB_STAT
+    KAFKA --> FLINK
+    FLINK --> CH
+    FLINK --> REDIS_COUNTER
+    RMQ --> SVC_STAT
     SVC_STAT --> REDIS_COUNTER
 
     SVC_ADMIN --> REDIS_URL
     SVC_ADMIN --> DB_URL
-    SVC_ADMIN --> DB_STAT
+    SVC_ADMIN --> CH
 
     SVC_REDIRECT --> ELK
     SVC_CREATE --> ELK
     DB_URL --> PROM
     REDIS_URL --> PROM
-    MQ --> PROM
-    DB_STAT --> OSS
+    KAFKA --> PROM
+    CH --> OSS
 ```
 
 **一、接入层（流量入口，负载均衡 + 安全防护）**
@@ -388,10 +415,10 @@ flowchart TD
 开发语言：Go 1.21，标准机型 8核16G
 
 核心服务及节点数：
-- **跳转服务（200台）**：本地 go-cache 前置拦截 60% 请求，缓存命中直接 302 返回；未命中查 Redis，Redis 未命中查 DB；命中后异步发 MQ 记录点击事件；封禁短链直接返回 403；
+- **跳转服务（200台）**：本地 go-cache 前置拦截 60% 请求，缓存命中直接 302 返回；未命中查 Redis，Redis 未命中查 DB；命中后异步发 Kafka 记录点击事件；封禁短链直接返回 403；
 - **生成服务（30台）**：号段模式预取短码，布隆过滤器校验唯一性，DB 事务写入短链主表 + 幂等表，异步写 Redis 缓存；
-- **统计消费服务（40台）**：消费 MQ 点击事件，批量聚合（每 100ms 合并一次）写入统计库，更新 Redis 实时计数器；
-- **管理查询服务（40台）**：短链 CRUD、统计查询、封禁操作，写操作触发 Redis 缓存主动失效。
+- **Flink 统计服务（40台）**：消费 Kafka 点击事件，Flink 实时聚合后批量写入 ClickHouse，更新 Redis 实时计数器；
+- **管理查询服务（40台）**：短链 CRUD、统计查询（读 ClickHouse）、封禁操作，写操作触发 Redis 缓存主动失效。
 
 关联关系：网关按路径路由 → 对应服务；所有服务通过 ETCD 注册发现，接入 Prometheus 监控。
 
@@ -402,11 +429,13 @@ flowchart TD
 核心组件：
 - **Redis 跳转缓存集群**：8分片 × 1主2从，存储 short_code → long_url 映射，LRU 淘汰，TTL=7天，承载 40万 QPS；
 - **Redis 布隆过滤器集群**：2分片 × 1主2从，存储全量短码，用于生成时唯一性预校验 + 跳转时快速判断短码是否存在（不存在直接返回 404，不查 DB）；
-- **Redis 计数器集群**：4分片 × 1主2从，存储各短链实时 PV 滑动窗口，每秒聚合一次写入统计库；
-- **RocketMQ 集群**：16主16从 + 4个 NameServer，承载 100万/s 点击事件消息，异步解耦跳转与统计；
+- **Redis 计数器集群**：4分片 × 1主2从，存储各短链实时 PV（HyperLogLog 统计 UV），提供秒级实时数据（ClickHouse 物化视图有数秒延迟）；
+- **Kafka 集群**：8 Broker × 3副本，承载 100万/s 点击事件日志流，128分区匹配 Flink 并行度，高吞吐异步解耦跳转与统计；
+- **RocketMQ 集群**：4主4从 + 3个 NameServer，承载生成事件（事务消息）和缓存失效广播（可靠投递）；
+- **Flink 流处理**：消费 Kafka 点击事件，实时聚合后批量写入 ClickHouse，驱动物化视图更新；
 - **ETCD**：号段分配协调（各生成服务实例预取号段互不重叠）+ 动态配置中心（降级开关、限流阈值等）。
 
-关联关系：跳转服务 → Redis 缓存/布隆过滤器/MQ；生成服务 → DB/Redis/ETCD；统计服务 → MQ/DB。
+关联关系：跳转服务 → Redis 缓存/布隆过滤器/Kafka；生成服务 → DB/Redis/ETCD/RocketMQ；Flink → Kafka/ClickHouse。
 
 ---
 
@@ -414,18 +443,18 @@ flowchart TD
 
 - **MySQL 短链库（4主8从）**：存储短链主表，按 short_code 哈希分4库256表；
 - **MySQL 幂等库（4主8从）**：存储 URL 幂等映射表，按 long_url_hash 哈希分4库64表；
-- **MySQL 统计库（32主64从）**：存储访问日志和统计视图表（ShortUrlStat），按 short_code 哈希分32库；
+- **ClickHouse 集群（4节点 × 3副本）**：存储全量点击明细（visit_log）+ 统计物化视图（short_url_stat_mv），列存压缩比 10:1，支持秒级 OLAP 分析；
 - **ELK 日志集群**：采集全链路日志，用于问题排查和安全审计；
-- **OSS 对象存储**：30天以上冷数据归档，按日期分桶存储。
+- **OSS 对象存储**：ClickHouse TTL 自动归档 1年以上冷数据到 OSS Volume，Parquet 格式按月分桶。
 
-关联关系：生成服务直写短链库 + 幂等库；统计消费服务写统计库；30天以上日志定期归档到 OSS。
+关联关系：生成服务直写短链库 + 幂等库；Flink 消费 Kafka 写 ClickHouse；1年以上冷数据由 ClickHouse TTL 自动归档到 OSS。
 
 ---
 
 **五、核心设计原则**
 - **跳转链路极致轻量**：本地缓存 → Redis → DB 三级，热点短链 99% 在本地缓存命中，P99 < 10ms
 - **生成与跳转完全解耦**：号段模式生成短码，不在请求路径上竞争全局锁
-- **统计异步化**：点击 → MQ → 批量聚合写DB，跳转链路无统计负担
+- **统计异步化**：点击 → Kafka → Flink 聚合 → ClickHouse，跳转链路无统计负担
 
 ---
 
@@ -537,8 +566,8 @@ func toBase62(num int64) string {
 
 ⑤ 异步记录点击事件（< 0.1ms，非阻塞）：
    - 往本地内存 channel 写入点击事件（uid, ip, ua, referer, time）
-   - 后台 goroutine 批量打包，每 10ms 发一批到 RocketMQ
-   - 不等 MQ 确认，跳转不阻塞
+   - 后台 goroutine 批量打包，每 10ms 发一批到 Kafka
+   - 不等 Kafka 确认，跳转不阻塞
 
 ⑥ 返回 302 跳转（整体 P99 < 10ms）：
    - HTTP 302：每次都记录点击（适合统计场景）
@@ -598,18 +627,18 @@ func HandleRedirect(c *gin.Context) {
 ```
 ① 跳转服务：点击事件写本地内存 channel（非阻塞，< 0.1ms）
 ② 后台聚合 goroutine：每 10ms 将 channel 中的事件批量打包
-③ 批量发送 MQ（topic_click_event，异步刷盘）：每批最多 1000 条
-④ 统计消费服务：
-   a. 消费 MQ 消息，100ms 内聚合来自同一 short_code 的点击事件
+③ 批量发送 Kafka（topic_click_event，acks=1）：每批最多 1000 条
+④ Flink 流处理：
+   a. 消费 Kafka 消息，滚动窗口（5s）内聚合来自同一 short_code 的点击事件
    b. IP 解析地域（离线 IP 库，如 MaxMind GeoIP，内存查找 < 1ms）
-   c. 批量写 visit_log 表（每次写 1000 条，减少 DB round-trip）
+   c. 批量写 ClickHouse visit_log 表（每次写 10000 条，ClickHouse 擅长批量写入）
    d. INCRBY 更新 Redis 计数器（每个 short_code 的实时 PV）
-   e. 定时（每 1 分钟）将 Redis 计数器刷到 short_url_stat 表
+   e. ClickHouse 物化视图自动聚合，无需手动刷盘到统计表
 
-UV 去重方案（HyperLogLog）：
-   - 每个 short_code 维护一个 Redis HyperLogLog：PFADD hll:{code} {ip}
-   - 误差率约 0.81%，内存占用固定 12KB/个，完全可接受
-   - 每日凌晨将 HLL 的 UV 值落盘到 short_url_stat.total_uv
+UV 去重方案（双层 HyperLogLog）：
+   - Redis HyperLogLog：PFADD hll:{code} {ip}，提供秒级实时 UV（误差 0.81%）
+   - ClickHouse uniqState：物化视图自动聚合，提供精确历史 UV（分钟级延迟）
+   - 实时查询走 Redis HLL，历史趋势分析走 ClickHouse
 ```
 
 ---
@@ -626,8 +655,8 @@ L1 go-cache 本地缓存（跳转服务实例，内存级）：
 
 L2 Redis 跳转缓存集群（分布式，毫秒级）：
    ├── su:{short_code}    String   short_code → long_url，TTL=7天，LRU淘汰
-   ├── hll:{short_code}   HLL      UV 去重计数，固定 12KB/个
-   └── pv:{short_code}    String   实时 PV 计数器，每分钟落盘
+   ├── hll:{short_code}   HLL      UV 去重计数，固定 12KB/个，秒级实时 UV
+   └── pv:{short_code}    String   实时 PV 计数器（INCR 原子累加）
    └── 命中率目标：99%+
 
 L3 布隆过滤器集群（全量短码存在性判断）：
@@ -662,7 +691,7 @@ func queryDBWithSingleFlight(code string) (string, int) {
 
 **缓存与 DB 一致性（封禁/删除操作）：**
 - 管理操作触发 DB 更新后，**主动删除 Redis 缓存**（而非更新），依靠下次查询重建
-- 本地缓存通过 MQ 广播失效消息实现跨实例同步（所有跳转服务实例订阅 `topic_cache_invalidate`）
+- 本地缓存通过 RocketMQ 广播失效消息实现跨实例同步（所有跳转服务实例订阅 `topic_cache_invalidate`）
 
 ---
 
@@ -670,33 +699,40 @@ func queryDBWithSingleFlight(code string) (string, int) {
 
 ### Topic 设计
 
-**分区数设计基准：**
-- RocketMQ 单分区安全吞吐约 **1万条/s**（点击事件消息体小，约 200B，异步刷盘吞吐更高）
-- 所需分区数 = 峰值消息速率 ÷ (单分区吞吐 × 冗余系数 0.7)，取 2 的幂次
+**双 MQ 分工原则：**
+- **Kafka**：点击事件日志流（高吞吐、顺序消费、与 Flink/ClickHouse 生态天然集成）
+- **RocketMQ**：事务消息（生成事件需与 DB 事务一致）、广播消费（缓存失效需全实例同步）
 
-| Topic | 峰值消息速率 | 分区数计算 | 分区数 | 刷盘策略 | 用途 | 消费者 |
-|-------|------------|-----------|--------|---------|------|--------|
-| `topic_click_event` | 100万条/s（每次跳转异步发一条） | 100万 ÷ (1万 × 0.7) ≈ 143，取2的幂次 | **128** | 异步刷盘 | 跳转点击事件，驱动统计 | 统计消费服务 |
-| `topic_url_create` | 1万条/s（每次生成发一条，用于缓存预热） | 1万 ÷ (1万 × 0.7) ≈ 2，最低保障取 | **8** | 同步刷盘 | 新短链生成事件 | 缓存预热服务 |
-| `topic_cache_invalidate` | 极低（封禁/删除操作） | 无需高吞吐，多实例广播消费 | **4** | 同步刷盘 | 缓存失效广播 | 所有跳转服务实例 |
-| `topic_dead_letter` | 极低 | 异常消息兜底 | **4** | 同步刷盘 | 死信兜底 | 告警服务+人工 |
+**Kafka Topic（点击事件日志流）：**
 
-> **topic_click_event 为何不用同步刷盘？** 点击统计允许极少量丢失（丢 0.001% 的点击数据对业务无实质影响），换取 10 倍写入性能提升，是合理的工程取舍。
+| Topic | 峰值消息速率 | 分区数 | 副本因子 | acks | 用途 | 消费者 |
+|-------|------------|--------|---------|------|------|--------|
+| `topic_click_event` | 100万条/s | **128** | 3 | acks=1 | 跳转点击事件，驱动 Flink 聚合写 ClickHouse | Flink 流处理 |
+
+> **为何 acks=1 而非 acks=all？** 点击统计允许极少量丢失（丢 0.001% 的点击数据对业务无实质影响），acks=1 吞吐提升约 3 倍，是合理的工程取舍。
+
+**RocketMQ Topic（事务消息 + 广播）：**
+
+| Topic | 峰值消息速率 | 分区数 | 刷盘策略 | 用途 | 消费者 |
+|-------|------------|--------|---------|------|--------|
+| `topic_url_create` | 1万条/s | **8** | 同步刷盘 | 新短链生成事件（事务消息，保证与 DB 一致） | 缓存预热服务 |
+| `topic_cache_invalidate` | 极低 | **4** | 同步刷盘 | 缓存失效广播（广播消费模式） | 所有跳转服务实例 |
+| `topic_dead_letter` | 极低 | **4** | 同步刷盘 | 死信兜底 | 告警服务+人工 |
 
 ### 消息可靠性
 
 **生产者端：**
-- 跳转服务异步发 MQ，写本地 channel 即返回，不等 MQ 确认（跳转 P99 不受 MQ 影响）
+- 跳转服务异步发 Kafka，写本地 channel 即返回，不等 Kafka 确认（跳转 P99 不受 Kafka 影响）
 - 后台 goroutine 发送失败时，消息写本地 WAL 文件，进程重启后重放（最多丢失 10ms 内的数据）
 
-**消费者端（幂等消费）：**
-- `visit_log` 表用 `(short_code, ip, click_time)` 联合唯一索引防重复写入
-- 消费者手动 ACK，批量处理完成后再确认，失败自动进入重试队列
+**消费者端（Flink 幂等写入）：**
+- ClickHouse ReplicatedMergeTree 引擎天然支持幂等写入（相同数据重复写入不影响结果）
+- Flink checkpoint 机制保证 exactly-once 语义，故障恢复从上次 checkpoint 重放
 
 **消息堆积处理：**
-- 堆积监控：`topic_click_event` 堆积 > 100万条触发 P1，> 500万条触发 P0
-- 紧急处理：扩容统计消费服务节点，调大消费线程池（从 32线程 → 256线程），开启批量消费（每批 5000条）
-- 降级策略：堆积严重时，停止写 visit_log 明细（只更新聚合统计），减少 DB 写压力
+- 堆积监控：`topic_click_event` consumer lag > 100万条触发 P1，> 500万条触发 P0
+- 紧急处理：增加 Flink 并行度（从 128 → 256），ClickHouse 批量写入 batch size 调大
+- 降级策略：堆积严重时，Flink 开启采样模式（10% 采样写明细），减少 ClickHouse 写入压力
 
 ---
 
@@ -798,7 +834,7 @@ type HotKeyDetector struct {
 触发条件（任一满足）：
   - Redis P99 > 20ms（正常应 < 2ms）
   - DB 读 P99 > 200ms
-  - MQ 堆积 > 500万条
+  - Kafka consumer lag > 500万条
   - 跳转接口错误率 > 0.1%
 
 熔断策略：
@@ -813,7 +849,7 @@ type HotKeyDetector struct {
 
 ```
 一级降级（轻度）：
-  - 关闭点击统计写入（MQ 停止消费，统计数据延迟，不影响跳转）
+  - 关闭点击统计写入（Flink 暂停消费 Kafka，统计数据延迟，不影响跳转）
   - 关闭 UV 去重计算（HyperLogLog 更新停止）
 
 二级降级（中度）：
@@ -847,7 +883,8 @@ su.cache.local_ttl_hot: 300       # 热点短链本地缓存 TTL（秒）
 | Redis 跳转缓存宕机 | 本地缓存 + DB 直查（性能降级但可用），关闭统计写入 | 自动恢复后从 DB 重建缓存 |
 | Redis 全部宕机 | 本地缓存扛热点，冷数据返回 503，关闭生成服务 | 手动恢复 |
 | DB 主库宕机 | MHA 自动切换（< 60s），跳转不受影响（走缓存），暂停生成 | 自动恢复 |
-| MQ 宕机 | 点击事件写本地 WAL，停止统计消费，跳转链路不受影响 | 手动恢复后重放 WAL |
+| Kafka 宕机 | 点击事件写本地 WAL，Flink 暂停消费，跳转链路不受影响 | Kafka 恢复后 Flink 从 checkpoint 重放 |
+| ClickHouse 宕机 | 统计查询降级返回缓存数据，Kafka 消息堆积等待恢复，跳转不受影响 | 副本自动恢复，Flink 续写 |
 | ETCD 宕机 | 各服务实例使用已预取的号段继续工作，暂停新号段申请 | 自动恢复后续申请 |
 
 ---
@@ -890,12 +927,12 @@ su.cache.local_ttl_hot: 300       # 热点短链本地缓存 TTL（秒）
 ### 冷热分层存储（点击日志）
 
 ```
-热数据（0~30天）  : MySQL 统计库（在线实时查询）
-温数据（30天~1年）: MySQL 归档库 或 ClickHouse（高效列存，OLAP分析）
-冷数据（1年以上） : OSS 对象存储（Parquet 格式，按月分桶，按需下载分析）
+热数据（0~30天）  : ClickHouse 本地存储（NVMe SSD，秒级 OLAP 实时查询）
+温数据（30天~1年）: ClickHouse 冷存储卷（HDD，TTL 自动迁移，查询稍慢但仍支持秒级聚合）
+冷数据（1年以上） : OSS 对象存储（Parquet 格式，按月分桶，ClickHouse TTL 自动归档）
 
-触发方式：定时任务每日凌晨将 30天前数据导出到 ClickHouse/OSS，删除 MySQL 明细
-效果：MySQL 统计库只保留 30天热数据，存储量从 5PB/3年 → 约 140GB（30天量级）
+触发方式：ClickHouse TTL 策略自动将 30天前数据从 SSD 迁移到 HDD 卷，1年前数据归档到 OSS Volume
+效果：ClickHouse 热数据（30天）约 140TB（压缩后），温数据自动降级，冷数据归档 OSS 降成本 70%
 ```
 
 ---
@@ -908,7 +945,9 @@ su.cache.local_ttl_hot: 300       # 热点短链本地缓存 TTL（秒）
 |------|-----------|
 | Redis | 哨兵模式 + 1主2从，AOF+RDB，跨可用区，切换 < 30s |
 | MySQL | MHA 主从，binlog 实时同步，跨机房备份，自动切换 < 60s |
-| RocketMQ | 16主16从，异步复制，跨可用区，Broker 故障自动路由 |
+| Kafka | 8 Broker × 3副本，ISR 机制，跨可用区部署，Broker 故障分区自动 rebalance |
+| RocketMQ | 4主4从，同步刷盘，跨可用区，Broker 故障自动路由 |
+| ClickHouse | 4节点 × 3副本 ReplicatedMergeTree，ZooKeeper 协调，节点故障自动副本恢复 |
 | ETCD | 3节点 Raft 集群，任意宕机1节点仍可服务 |
 | 服务层 | K8s 多副本，跨可用区，健康检查失败 10s 内摘流 |
 | 全局 | 同城双活，DNS 流量调度，单可用区故障 5min 内切换 |
@@ -938,7 +977,7 @@ su_bloom_false_positive_rate    布隆误判率（监控误判是否异常升高
 **统计链路：**
 
 ```
-su_mq_consumer_lag              MQ 消费堆积（< 100万 P1，> 500万 P0）
+su_kafka_consumer_lag            Kafka 消费堆积（< 100万 P1，> 500万 P0）
 su_stat_write_latency           统计写入延迟（允许 < 1min 延迟）
 ```
 
@@ -955,7 +994,7 @@ su_ip_blacklist_size            IP 黑名单大小（异常增长告警）
 | 级别 | 触发条件 | 响应时间 | 动作 |
 |------|---------|---------|------|
 | P0（紧急） | 短码冲突、跳转 P99 > 50ms、Redis 全挂、跳转成功率 < 99% | **5分钟** | 自动触发降级 + 电话告警 |
-| P1（高优） | MQ堆积 > 500万、DB 主从延迟 > 5s、生成 P99 > 500ms、404率异常飙升 | 15分钟 | 钉钉 + 短信告警 |
+| P1（高优） | Kafka堆积 > 500万、DB 主从延迟 > 5s、生成 P99 > 500ms、404率异常飙升 | 15分钟 | 钉钉 + 短信告警 |
 | P2（一般） | CPU > 85%、内存 > 85%、号段剩余 < 1000、布隆误判率上升 | 30分钟 | 钉钉告警 |
 
 ### 线上运维规范
@@ -1194,25 +1233,25 @@ func parseReferer(referer string) string {
 
 ---
 
-### Q7：点击统计数据最终存在 MySQL 统计库，但 100万 QPS 的点击事件，MQ 消费后如何高效批量写入 MySQL 而不成为瓶颈？
+### Q7：点击统计数据写入 ClickHouse，但 100万 QPS 的点击事件经 Kafka 削峰后，Flink 如何高效批量写入 ClickHouse 而不成为瓶颈？
 
 **参考答案：**
 
-**核心：批量聚合 + 预聚合分层写入，将 100万次/s 写操作压缩为 5万次/s。**
+**核心：Kafka 削峰 + Flink 窗口聚合 + ClickHouse 大批量写入，天然适配海量日志 OLAP 分析场景。**
 
-① **第一层聚合：内存 HashMap 滑动窗口（消费者内）**：
+① **第一层：Flink 滚动窗口聚合（5s 窗口）**：
 ```go
-// 消费者内存聚合：100ms 内来自同一 short_code 的点击合并
+// Flink 滚动窗口内聚合：5s 内来自同一 short_code 的点击合并后批量写入
+// 伪代码描述处理逻辑（实际用 Flink Java/Scala API）
 type ClickAggregator struct {
     buf    map[string]*ClickStat  // short_code -> 聚合统计
     mu     sync.Mutex
-    ticker *time.Ticker          // 100ms 触发一次批量写
+    ticker *time.Ticker          // 5s 窗口触发一次批量写
 }
 
 type ClickStat struct {
     PV      int64
-    UVSet   map[string]bool  // IP 去重（内存 UV，精确但有上限）
-    Details []*ClickDetail   // 明细列表
+    Details []*ClickDetail   // 明细列表（保留原始数据写 ClickHouse）
 }
 
 func (a *ClickAggregator) Flush() {
@@ -1221,10 +1260,11 @@ func (a *ClickAggregator) Flush() {
     a.buf = make(map[string]*ClickStat)
     a.mu.Unlock()
 
-    // 批量写 visit_log（每次 1000 条 INSERT）
-    bulkInsertVisitLog(snapshot)
+    // 批量写 ClickHouse visit_log（每次 10000+ 条 INSERT）
+    // ClickHouse 擅长大批量写入，单次写入越多性能越好（避免频繁小 part 合并）
+    bulkInsertClickHouse(snapshot)
 
-    // 批量 INCRBY 更新 Redis PV 计数器
+    // 批量 INCRBY 更新 Redis PV 计数器（秒级实时查询）
     pipe := rdb.Pipeline()
     for code, stat := range snapshot {
         pipe.IncrBy(ctx, "pv:"+code, stat.PV)
@@ -1233,19 +1273,21 @@ func (a *ClickAggregator) Flush() {
 }
 ```
 
-② **第二层聚合：Redis PV 计数器 → MySQL 定时刷盘**：
-- Redis 承载实时 PV 计数，每 1 分钟将增量刷到 `short_url_stat.today_pv`
-- `UPDATE short_url_stat SET today_pv = today_pv + ? WHERE short_code = ?`
-- 批量更新（每次 1000 条），进一步减少 DB 写入次数
+② **ClickHouse 物化视图自动聚合（无需手动刷盘）**：
+- ClickHouse 物化视图 `short_url_stat_mv` 在数据写入 `visit_log` 时自动增量聚合 PV/UV
+- 无需 Redis → MySQL 定时刷盘的复杂链路
+- 查询时直接 `SELECT count() as pv, uniqMerge(uv_state) as uv FROM short_url_stat_mv WHERE short_code = ?`
 
-③ **UV 精准计算（HyperLogLog）**：
-- 精确 UV 用内存 Set 有上限（IP 太多内存爆）
-- 改用 Redis HyperLogLog：`PFADD hll:{code} {ip}`，误差 0.81%，每个 HLL 固定 12KB
-- 每日凌晨将 HLL 的 PFCOUNT 结果落盘到 DB
+③ **UV 精准计算（双层 HyperLogLog）**：
+- **Redis HyperLogLog**：`PFADD hll:{code} {ip}`，秒级实时 UV，误差 0.81%，12KB/个
+- **ClickHouse uniqState**：物化视图自动维护，支持任意时间范围 UV 聚合查询
+- 实时大屏走 Redis HLL，历史趋势分析走 ClickHouse（两者互补）
 
-④ **写放大控制（visit_log 明细）**：
-- 不是每次点击都写明细，采用采样策略：10% 采样率写明细（对统计足够，减少 90% 写量）
-- 超级热点短链（100万+点击/天）仅写聚合统计，不写明细
+④ **ClickHouse 写入性能保障（核心）**：
+- 批量写入每批 10000+ 行（ClickHouse 每次 INSERT 产生一个 data part，过于频繁会触发大量 merge）
+- Buffer 表引擎作为写入缓冲：`Engine = Buffer(visit_log, ...)`，达到阈值自动 flush
+- 4节点集群，单节点写入 50万行/s，总吞吐 200万行/s >> 100万/s 峰值
+- 列存压缩比约 10:1，3年数据仅需 ~500TB 存储空间
 
 ---
 
@@ -1370,5 +1412,5 @@ CREATE TABLE user_shorturl_index (
 > 核心差异在于：
 > 1. **跳转是绝对热路径**，本地缓存 → 布隆过滤器 → Redis 三级拦截，99% 请求不触碰 DB；
 > 2. **短码生成用号段模式**，彻底规避分布式锁竞争，线性扩展，无单点；
-> 3. **统计完全异步化**，点击 → 本地 channel → MQ → 批量聚合写 DB，跳转链路零统计负担；
+> 3. **统计完全异步化**，点击 → 本地 channel → Kafka → Flink 聚合 → ClickHouse，跳转链路零统计负担；
 > 4. **布隆过滤器是关键基础设施**，双重用途：防穿透（跳转时）+ 唯一性预校验（生成时）。

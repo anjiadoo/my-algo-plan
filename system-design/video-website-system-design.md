@@ -51,7 +51,7 @@
 | 规模 | DAU **5亿**，视频存量 **550亿**，日均播放 **250亿次** |
 | 峰值 | 播放 QPS **1500万/s**，上传 QPS **2万/s**，CDN 出口带宽 **180 Tbps** |
 | 一致性 | 计数器允许 5s 延迟，播放记录允许 3s 延迟，审核通过后 5min 全网可见 |
-| 存储 | 原始+转码多副本 **16.5 EB**（三级分层），弹幕/计数器 **热数据 2TB** |
+| 存储 | 原始+转码多副本 **16.5 EB**（三级分层），弹幕/计数器 **热数据 2TB**，ClickHouse 播放统计 **135TB**，MongoDB 用户画像 **1TB** |
 
 ### 明确禁行需求
 - **禁止未转码原视频直接对外播放**：原视频码率无法自适应，移动网络卡顿率飙升
@@ -130,6 +130,22 @@
 - 弹幕全量：550亿 × 1%(活跃弹幕视频) × 1万弹幕 = **5500亿行** × 200B = **110 TB**
 - HBase 集群：200 节点（24核64G + 12×8TB HDD）
 
+**ClickHouse（播放统计+行为分析+实时大屏）：**
+- 播放统计明细：250亿/日 × 300B = **7.5 TB/天**（含 video_id、user_id、时长、码率、地域等维度）
+  - 保留 90 天明细 + 1 年聚合：90 × 7.5TB = **675 TB**（压缩后约 **135 TB**，压缩比 5:1）
+  - 写入 QPS：250亿/86400 = **29万/s**
+- 互动统计：点赞/评论/分享变更事件，峰值 **500万/s**
+- 实时大屏聚合查询：P99 < 500ms
+- 集群规划：**40 节点**（32核128G + 8×4TB NVMe SSD），3 副本
+- 用途：视频播放趋势分析、用户行为漏斗、实时热榜计算验证、AB 实验指标、运营报表
+
+**MongoDB（用户画像+视频详情页扩展）：**
+- 用户画像文档：5亿活跃用户 × 2KB = **1 TB**
+  - 字段：兴趣标签、观看偏好、活跃时段、设备信息、地域分布等（Schema 灵活，频繁迭代）
+  - 写入 QPS：Flink 实时更新，峰值 **10万/s**
+- 视频扩展详情：热门视频 5000万 × 5KB = **250 GB**（含富文本描述、结构化标签、推荐理由等）
+- 集群规划：**3 分片 × 3 副本**，共 9 节点（16核64G + 2TB SSD）
+
 **Kafka：**
 - 播放日志 Topic：1500万 msg/s × 200B = **3 GB/s** = **260 TB/天**
 - 保留 7 天（用于大数据分析）= **1.8 PB**
@@ -167,6 +183,8 @@
 | | 弹幕（Barrage） | barrage_{video_shard} | 弹幕ID、视频ID、视频相对时间(ms)、发送用户ID、弹幕文本 | 发送/查询/过滤 |
 | | 计数器（Counter） | video_counter | 视频ID、播放数、点赞数、评论数、分享数 | 异步累加 |
 | 用户行为 | 播放记录（WatchHistory） | HBase watch_history | 用户ID+视频ID+时间戳、观看进度(秒)、是否看完 | 记录/续播 |
+| | 用户画像（UserProfile） | MongoDB user_profile | 用户ID、兴趣标签、观看偏好、活跃时段、设备信息 | 实时更新/召回 |
+| | 播放统计（PlayStat） | ClickHouse play_stat | 视频ID、用户ID、播放时长、码率、地域、时间戳 | 统计分析/大屏 |
 | 分发聚合 | 推荐流（RecFeed） | Redis rec_feed:{uid} | 用户ID、候选视频列表(200条)、生成时间 | 预生成/刷新/消费 |
 
 ### MySQL 库表设计
@@ -379,13 +397,15 @@ flowchart TD
         RDS["Redis 集群<br/>128分片 × 1主2从<br/>4TB 热数据"]
         KAFKA["Kafka 集群<br/>播放日志/转码任务/互动/计数"]
         ES["Elasticsearch<br/>全文检索"]
+        CK["ClickHouse 集群<br/>播放统计/行为分析/实时大屏"]
         ETCD["ETCD<br/>配置 / 开关"]
     end
 
     subgraph 存储层
         DB["MySQL 集群<br/>128主256从(video_meta)<br/>256主512从(comment/barrage)"]
         HBASE["HBase 集群<br/>watch_history / 弹幕全量"]
-        DW["数仓 ODS→DWD→DWS<br/>Hive / Spark / Flink<br/>推荐样本 / 热榜 / 报表"]
+        MONGO["MongoDB 集群<br/>用户画像 / 视频详情页"]
+        DW["数仓 ODS→DWD→DWS<br/>Hive / Spark / Flink<br/>推荐样本 / 报表"]
         OSS_ARC["OSS 归档<br/>冷数据深度归档<br/>12 EB"]
     end
 
@@ -422,9 +442,11 @@ flowchart TD
     BAR --> RDS
     HIST --> HBASE
     REC --> RDS
+    REC --> MONGO
     REC --> DW
     SEARCH --> ES
 
+    KAFKA --> CK
     KAFKA --> DW
     OSS --> OSS_ARC
     DB --> DW
@@ -717,10 +739,16 @@ func Aggregator() {
     for msg := range kafkaConsumer {
         batch.Add(msg)
         if batch.Size() >= 1000 || batch.Age() > 5*time.Second {
+            // 1. 聚合计数写 MySQL（仅累加值，供前端展示兜底）
             db.Exec(`
                 INSERT INTO video_counter (video_id, like_cnt)
                 VALUES (?, ?) AS v
                 ON DUPLICATE KEY UPDATE like_cnt = GREATEST(like_cnt, like_cnt + v.like_cnt)
+            `, batch)
+            // 2. 明细统计写 ClickHouse（用于趋势分析、实时大屏、运营报表）
+            clickhouse.BatchInsert(`
+                INSERT INTO play_stat (video_id, user_id, event_type, cnt, event_time, region)
+                VALUES (?, ?, ?, ?, ?, ?)
             `, batch)
             batch.Clear()
         }
@@ -738,10 +766,10 @@ func Aggregator() {
 **架构：**
 ```
 离线层（T+1）：
-  Spark/Flink 读取播放日志 + 互动行为 → 训练推荐模型 → 生成用户画像
+  Spark/Flink 读取播放日志 + 互动行为 → 训练推荐模型 → 生成用户画像 → 写入 MongoDB
 
 近线层（分钟级）：
-  Flink 实时消费 Kafka 播放日志 → 更新用户兴趣标签 → 写入 Redis
+  Flink 实时消费 Kafka 播放日志 → 更新用户兴趣标签 → 写入 MongoDB user_profile + Redis 热缓存
 
 在线层（请求时）：
   1. 召回（50ms）：多路召回（协同过滤/热门/关注/标签），合并 1000 候选
@@ -757,9 +785,12 @@ func Aggregator() {
 - 新用户冷启动：按热榜 + 地域 + 设备 推送通用池
 
 **存储：**
-- Redis key: `rec_feed:{uid}`，value: JSON list of video_ids（约 4KB/用户）
+- 推荐流：Redis key: `rec_feed:{uid}`，value: JSON list of video_ids（约 4KB/用户）
 - 5亿 DAU × 4KB = **2TB**（已计入 Redis 集群规划）
 - TTL: 24h（过期后降级到热榜）
+- 用户画像：MongoDB `user_profile` 集合，Schema 灵活支持兴趣标签快速迭代
+  - 字段：interests[], watch_pref{}, active_hours[], device_info{}, geo_dist{}
+  - 热用户画像同步到 Redis（TTL 2h），召回阶段直接读 Redis
 
 ### 5.10 热榜（预计算，非实时查询）
 
@@ -770,11 +801,14 @@ Flink 实时聚合：
   窗口：滚动 5min 窗口
   计算：播放量 × 0.4 + 点赞率 × 0.3 + 完播率 × 0.2 + 评论率 × 0.1 = 热度分
   输出：每 5min 更新 Redis 热榜 Key
+  同时：明细写入 ClickHouse play_stat 表（供运营实时大屏和离线分析）
 
 存储：
   Redis: ZSET hot_rank:{category}:{period}
     member = video_id, score = 热度分
     period: daily / weekly / monthly
+  ClickHouse: play_stat 表存储播放明细（按天分区，90天TTL）
+    用途：热榜算法验证、AB实验对比、运营报表、异常检测
   
 查询：
   GET /rank?category=music&period=daily&page=1
@@ -1139,7 +1173,8 @@ Kubernetes HPA:
 **五、全链路 Trace（OpenTelemetry）**
 - 播放卡顿排查：traceID 贯穿 CDN → 源站 → 客户端
 - 上传失败排查：traceID 贯穿 客户端 → OSS → 转码 → 审核
-- 存储：Trace 写入 ClickHouse，保留 7 天，按 video_id/user_id 索引
+- 存储：Trace + 播放统计 + 用户行为日志统一写入 ClickHouse，保留 90 天，按 video_id/user_id/time 索引
+- ClickHouse 典型查询：单视频播放趋势、地域分布、码率切换分析、用户留存漏斗
 
 ### 告警矩阵
 

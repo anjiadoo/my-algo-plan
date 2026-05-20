@@ -12,10 +12,10 @@
 | 3 | **直播房间分片** | 单房间 WS长链接服务 副本 = ⌈在线数/5万⌉，副本间 RocketMQ 集群消费 + Job 路由层分发 | 单 Go WS长链接服务 进程稳定承载5万长连接（epoll + goroutine 池），副本内直接内存广播零网络开销；跨副本通过 Job 路由层查全局路由表精准推送，具备持久化和背压能力 |
 | 4 | **弹幕洪水抽样** | 发送 QPS > 房间阈值（默认1000条/s）后启用智能抽样，客户端接收上限 200条/s | 用户视觉极限 ≈ 每秒屏幕可阅读20~30条，超出纯浪费带宽；抽样按"VIP+高互动权重"保留，不丢失重要内容 |
 | 5 | **审核架构** | 关键词同步拦截（<5ms） + AI 异步审核（先发后审，命中下架） | 关键词拦截覆盖95%违规（赌博/政治/广告），AI 审核耗时 100-300ms 不阻塞推送；违规通过 `danmu_tombstone` Set 实时下架 |
-| 6 | **弹幕落盘异步** | 推送链路仅写 Redis，MQ 异步批量落 MySQL（100条/批或500ms） | 直播发送 200万 QPS 若同步落 DB 即刻击穿；异步合并写 MySQL TPS 从 200万/s 降至 2万/s 可控（落盘的是原始发送量，非扇出量）|
+| 6 | **弹幕落盘异步** | 推送链路仅写 Redis，MQ 异步批量落 MongoDB（100条/批或500ms） | 直播发送 200万 QPS 若同步落 DB 即刻击穿；异步合并写 MongoDB TPS 从 200万/s 降至 2万/s 可控（落盘的是原始发送量，非扇出量）|
 | 7 | **客户端时序对齐** | 点播用相对播放时间 `offset_ms`，直播用绝对时间戳 `server_ts + NTP 校准` | 点播用户拖动进度条需按相对时间二分查找；直播需与主播音视频流对齐（音视频流自带 PTS）|
 | 8 | **连接鉴权** | JWT + 房间 Ticket（短期有效），WS长链接服务 握手校验一次后进入长连 | 百万连接握手若每次查 Redis/DB 必挂；Ticket 由业务网关签发（1分钟有效），WS长链接服务 仅本地 RSA 公钥校验 |
-| 9 | **冷热分层** | 近7天 MySQL、7~90天 TiKV、>90天 OSS Parquet | 弹幕写入是时序数据，LSM 架构（TiKV）写吞吐远优于 MySQL；90天外离线分析用 Parquet+Spark |
+| 9 | **冷热分层** | 近1年 MongoDB、1~5年 TiKV、>5年 OSS Parquet | 弹幕写入是时序数据，MongoDB WiredTiger 追加写性能优秀；LSM 架构（TiKV）适合冷数据归档；5年外离线分析用 Parquet+Spark |
 | 10 | **重复弹幕合并** | 同一房间5秒内完全相同内容 ≥ 10条，合并为"x 1.2万"显示 | 大型事件（进球/高潮）出现复读机刷屏，合并可降低90%推送量，同时提升观看体验 |
 
 ---
@@ -132,7 +132,7 @@
 
 | 数据 | 容量 | 选型 | 说明 |
 |------|------|------|------|
-| 点播弹幕热表（近1年） | ≈ 14 TB | MySQL 分库分表 32库256表 | 按 `video_id % 256` 分表，按 `month` 再做二级分区 |
+| 点播弹幕热表（近1年） | ≈ 14 TB | MongoDB 分片集群（按 video_id 哈希分片） | B站验证方案：文档模型天然适配弹幕（自包含+无Join+灵活字段扩展），WiredTiger 引擎写吞吐远超 MySQL |
 | 点播弹幕冷表（1~5年） | ≈ 41 TB | TiKV（LSM） | 写入吞吐高，Range Scan 按 video_id 扫时间窗 |
 | 直播弹幕热存（30分钟可回溯） | ≈ 90 GB | Redis Cluster + 本地环形队列 | 按房间 ZSet，TTL 自动清理 |
 | 直播弹幕落盘（30天审计） | ≈ 10 TB | TiKV / HBase | 仅供审计/违规追溯，非在线链路 |
@@ -171,7 +171,7 @@
 | 落盘 Worker | 10万条/s（批量） | 250万条/s | **40 台** | 100条/批+500ms 合并，批量 INSERT |
 | Redis Cluster | 10万 QPS/分片 | 800万读 + 500万写 ≈ 1300万 | **128 分片 × 1主2从 = 384 实例** | 冗余 0.7，单分片实际承载不超 7万 |
 | RocketMQ Broker | 20万条/s/节点 | 1000万条/s | **24 主 24 从**（8 主专用广播 Topic + 16 主业务 Topic） | 广播 Topic 异步刷盘（低延迟）；业务 Topic 同步刷盘（不丢消息） |
-| MySQL（弹幕热库） | 写 3000 TPS/主 | 30万 TPS（批量后） | **32库（4主8从 per 库，按实际用16主共享）** | 按 video_id % 256 分表 |
+| MongoDB（弹幕热库） | 写 10万/分片 | 30万 TPS（批量后） | **32 分片（每分片1主2从 = 96 实例）** | 按 video_id 哈希分片，WiredTiger 引擎 |
 | TiKV | 写 5万/节点 | 30万 | **12 节点 + 3 PD** | 冷存+LSM 写吞吐 |
 
 ---
@@ -182,20 +182,20 @@
 
 > 说明：弹幕系统的写路径极简（一条弹幕入库 + 房间内广播），复杂性在读路径（点播按时间窗口拉取/直播长连接扇出/审核下架同步到所有客户端）。审核、计数、屏蔽词这些都是围绕"弹幕发送"这一核心动作展开的事件消费者或配置，不是并列的聚合。因此这里按"实体（Entity）/ 事件（Event）/ 读模型（Read Model）/ 配置（Config）"四类梳理。
 
-#### 3.1.1 ① 实体（Entity，写模型）
+**3.1.1 ① 实体（Entity，写模型）**
 
 | 模型 | 职责 | 核心属性 | 核心行为 | 存储位置 |
 |------|------|---------|---------|---------|
-| **Danmu** 弹幕 | 单条弹幕全生命周期：发送→审核→展示→下架 | 弹幕ID、视频ID/房间ID、视频相对时间（点播）或服务端时间戳（直播）、发送用户ID、弹幕内容、颜色、位置（顶/底/滚动）、状态 | 发送、撤回、状态变更、查询（按时间窗/房间） | Redis ZSet（热数据权威）+ MySQL/TiKV（持久化+归档）|
+| **Danmu** 弹幕 | 单条弹幕全生命周期：发送→审核→展示→下架 | 弹幕ID、视频ID/房间ID、视频相对时间（点播）或服务端时间戳（直播）、发送用户ID、弹幕内容、颜色、位置（顶/底/滚动）、状态 | 发送、撤回、状态变更、查询（按时间窗/房间） | Redis ZSet（热数据权威）+ MongoDB（持久化，B站验证方案）+ TiKV（冷归档）|
 | **Room** 直播房间 | 直播房间元数据 + 在线数 + 禁言列表 | 房间ID、主播ID、房间状态、在线人数、禁言名单 | 进房、离房、禁言、在线数广播 | MySQL（房间元数据）+ Redis（在线数/禁言名单）|
 
 > 弹幕领域真正的写实体只有两个：`Danmu`（内容本身）和 `Room`（直播场景的房间上下文）。点播没有 Room 概念，直接关联 video_id。
 
-#### 3.1.2 ② 事件（Event，事件流）
+**3.1.2 ② 事件（Event，事件流）**
 
 | 模型 | 职责 | 核心属性 | 触发时机 | 下游消费 |
 |------|------|---------|---------|---------|
-| **DanmuSent** 弹幕发送事件 | 一条弹幕发送成功后的事件 | 弹幕ID、目标ID（视频/房间）、发送用户ID、弹幕内容、时间戳 | Redis ZSet 写入成功 + 关键词审核通过 | ① **MQ 异步落盘**（MySQL/TiKV 批量写）② AI 审核服务 ③ 计数视图更新 ④ 直播场景额外：RocketMQ 广播 Topic → Job 路由层 → WS长链接服务 扇出 |
+| **DanmuSent** 弹幕发送事件 | 一条弹幕发送成功后的事件 | 弹幕ID、目标ID（视频/房间）、发送用户ID、弹幕内容、时间戳 | Redis ZSet 写入成功 + 关键词审核通过 | ① **MQ 异步落盘**（MongoDB 批量写入）② AI 审核服务 ③ 计数视图更新 ④ 直播场景额外：RocketMQ 广播 Topic → Job 路由层 → WS长链接服务 扇出 |
 | **DanmuReviewed** 审核结果事件 | AI 审核完成回调 | 弹幕ID、审核结果（通过/拒绝）、置信度、拒绝原因 | AI 审核服务处理完毕 | ① 更新 Danmu.status ② 违规则触发 `DanmuTakedown` 并写入墓碑 Set ③ 审核日志落盘 |
 | **DanmuTakedown** 弹幕下架事件 | 违规弹幕被下架 | 弹幕ID、目标ID（视频/房间）、下架原因 | 审核判定违规或用户举报被确认 | ① Redis 墓碑 Set 写入 ② **直播场景 RocketMQ 广播 Topic 投递删除指令 → Job 路由层分发**（WS长链接服务 实时隐藏）③ 点播下次拉取客户端差集过滤 |
 | **UserMuted** 用户禁言事件 | 主播/房管禁言某用户 | 房间ID、被禁言用户ID、操作人ID、到期时间戳、禁言原因 | 禁言操作成功 | ① 写入 `user_mute` ② Redis 禁言缓存 ③ WS长链接服务 踢出对应用户的连接 |
@@ -204,7 +204,7 @@
 > - `DanmuTakedown` 是对用户体验最关键的一个事件——违规弹幕必须 1s 内从所有客户端消失，事件驱动的墓碑 Set + RocketMQ 广播 Topic 删除指令是核心机制
 > - `DanmuSent` 是"写路径"和"落盘/扇出/审核"三个下游的解耦点，直播场景下发送速率极高（200万 QPS），事件驱动架构是规模必然要求
 
-#### 3.1.3 ③ 读模型 / 物化视图（Read Model，查询侧）
+**3.1.3 ③ 读模型 / 物化视图（Read Model，查询侧）**
 
 | 模型 | 职责 | 核心属性 | 生成方式 | 一致性要求 |
 |------|------|---------|---------|-----------|
@@ -215,7 +215,7 @@
 
 > `TombstoneSet` 是"弱一致主流 + 强一致下架"的巧妙设计：弹幕本身允许最终一致，但违规下架必须立即生效，通过墓碑 Set 反向过滤实现。
 
-#### 3.1.4 ④ 配置（Config，全局规则）
+**3.1.4 ④ 配置（Config，全局规则）**
 
 | 模型 | 职责 | 说明 |
 |------|------|------|
@@ -223,7 +223,7 @@
 
 > 屏蔽词库在 DDD 里属于"策略/规则（Policy）"而非业务聚合，它是全局共享的无状态配置，放到实体/事件/视图里都不合适，单列为"配置"更准确。
 
-#### 3.1.5 模型关系图
+**3.1.5 模型关系图**
 
 ```
   [写路径]                      [事件流]                         [读路径]
@@ -239,7 +239,7 @@
          ↓
   ┌──────────────┐──UserMuted────→ WS长链接服务 踢出连接
   │    Room      │──DanmuTakedown→ TombstoneSet + MQ广播删除指令→Job路由层分发
-  │ (Redis+MySQL)│
+  │ (Redis+MongoDB)│
   └──────────────┘
 
   [配置] SensitiveWord（ETCD 下发，编译 AC 自动机，同步到所有发送服务）
@@ -251,56 +251,80 @@
 - **强一致在下架**：弹幕内容允许最终一致，但墓碑 Set 是强一致读模型（违规必须 1s 内失效）
 - **配置与业务分离**：屏蔽词库不是聚合，是全局策略配置
 
-### 3.2 弹幕主表（点播，分库分表）
+### 3.2 弹幕主集合（点播，MongoDB 分片集群）
 
-```sql
--- 按 video_id % 256 分表，共 32 库 × 256 表 / 库 = 8192 张物理表
--- 每张表按 month 做 RANGE 分区，便于归档
-CREATE TABLE danmu_vod_xx (
-  id BIGINT PRIMARY KEY COMMENT '雪花ID全局唯一',
-  video_id BIGINT NOT NULL COMMENT '视频ID',
-  bucket_id INT NOT NULL COMMENT '时间桶=floor(offset_ms/30000)',
-  offset_ms INT NOT NULL COMMENT '视频相对时间,单位ms',
-  user_id BIGINT NOT NULL,
-  content VARCHAR(150) NOT NULL,
-  color INT NOT NULL DEFAULT 16777215 COMMENT '24bit RGB',
-  pos TINYINT NOT NULL DEFAULT 0 COMMENT '0滚动 1顶 2底',
-  font_size TINYINT NOT NULL DEFAULT 25,
-  status TINYINT NOT NULL DEFAULT 0 COMMENT '0正常 1审核中 2已下架 3自删',
-  audit_level TINYINT NOT NULL DEFAULT 0 COMMENT '0未审 1关键词放行 2AI放行 3人审放行',
-  like_cnt INT NOT NULL DEFAULT 0,
-  report_cnt INT NOT NULL DEFAULT 0,
-  create_time DATETIME NOT NULL,
-  KEY idx_video_bucket (video_id, bucket_id, status) COMMENT '按视频+时间桶拉取',
-  KEY idx_user_time (user_id, create_time) COMMENT '个人发送记录',
-  KEY idx_status_create (status, create_time) COMMENT '审核扫描'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-PARTITION BY RANGE (TO_DAYS(create_time)) (
-  PARTITION p202601 VALUES LESS THAN (TO_DAYS('2026-02-01')),
-  PARTITION p202602 VALUES LESS THAN (TO_DAYS('2026-03-01'))
-  -- 按月滚动归档到 TiKV
-);
+```javascript
+// MongoDB Collection: danmu_vod
+// 分片策略：按 video_id 哈希分片（均匀分布写入），支持同视频弹幕在同一分片内聚合查询
+// 业界参考：B站弹幕系统采用 MongoDB 存储，文档模型天然适配弹幕数据特征
+
+// 文档结构（单条弹幕 = 一个文档，自包含无需 Join）
+{
+  _id: ObjectId("..."),           // MongoDB 自动生成，或使用雪花ID
+  danmu_id: NumberLong(xxx),      // 雪花ID全局唯一（兼容外部引用）
+  video_id: NumberLong(xxx),      // 视频ID
+  bucket_id: 5,                   // 时间桶 = floor(offset_ms / 30000)
+  offset_ms: 152300,              // 视频相对时间，单位ms
+  user_id: NumberLong(xxx),       // 发送用户ID
+  content: "前方高能",             // 弹幕内容
+  style: {                        // 样式属性（文档模型优势：嵌套结构灵活扩展）
+    color: 16777215,              // 24bit RGB
+    pos: 0,                       // 0滚动 1顶 2底
+    font_size: 25,                // 字号
+    // 未来可扩展：动画类型、特效ID、高级弹幕SVG路径等，无需 ALTER TABLE
+  },
+  status: 0,                      // 0正常 1审核中 2已下架 3自删
+  audit_level: 0,                 // 0未审 1关键词放行 2AI放行 3人审放行
+  like_cnt: 0,                    // 点赞数
+  report_cnt: 0,                  // 举报数
+  create_time: ISODate("2026-01-15T10:30:00Z")
+}
+
+// 索引设计
+db.danmu_vod.createIndex({ video_id: 1, bucket_id: 1, status: 1 })  // 核心查询：按视频+时间桶拉取
+db.danmu_vod.createIndex({ user_id: 1, create_time: -1 })            // 个人发送记录
+db.danmu_vod.createIndex({ status: 1, create_time: 1 })              // 审核扫描
+db.danmu_vod.createIndex({ create_time: 1 }, { expireAfterSeconds: 365*86400 }) // TTL 索引：1年后自动迁移到 TiKV 冷存
+
+// 分片配置
+sh.shardCollection("danmu.danmu_vod", { video_id: "hashed" })
+// 哈希分片保证写入均匀分布，同一 video_id 的弹幕在同一 chunk 内（查询不扇出）
+
+// 为什么选 MongoDB 而非 MySQL（业界最佳实践）：
+// 1. Schema 灵活：弹幕样式字段频繁扩展（高级弹幕、特效弹幕），文档模型无需 DDL 变更
+// 2. 写入吞吐：WiredTiger 引擎追加写性能优于 InnoDB（无行锁竞争）
+// 3. 无事务需求：弹幕是独立文档，无跨文档事务，MongoDB 完美适配
+// 4. 自动分片：原生水平扩展，无需中间件（ShardingSphere 等）
+// 5. B站验证：B站弹幕系统 MongoDB 集群承载日均数十亿条弹幕读写
 ```
 
-### 3.3 弹幕主表（直播热存，TTL 落盘）
+### 3.3 弹幕主集合（直播热存，MongoDB TTL）
 
-```sql
--- 直播弹幕仅保留30分钟在线查询，30天在线审计，90天归档
-CREATE TABLE danmu_live_hot (
-  id BIGINT PRIMARY KEY,
-  room_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  content VARCHAR(150) NOT NULL,
-  server_ts BIGINT NOT NULL COMMENT '服务端毫秒时间戳',
-  msg_type TINYINT NOT NULL DEFAULT 0 COMMENT '0普通 1礼物 2系统 3上舰',
-  priority TINYINT NOT NULL DEFAULT 1 COMMENT '优先级,高优先级不抽样',
-  status TINYINT NOT NULL DEFAULT 0,
-  KEY idx_room_ts (room_id, server_ts),
-  KEY idx_status_ts (status, server_ts)
-) ENGINE=InnoDB
-PARTITION BY RANGE (server_ts / 1000) (
-  /* 按天分区 */
-);
+```javascript
+// MongoDB Collection: danmu_live
+// 直播弹幕仅保留30天审计，之后归档到 TiKV/OSS
+// Schema 比点播更精简，强调写入吞吐
+
+{
+  _id: ObjectId("..."),
+  danmu_id: NumberLong(xxx),
+  room_id: NumberLong(xxx),
+  user_id: NumberLong(xxx),
+  content: "666",
+  server_ts: NumberLong(1705312200000),  // 服务端毫秒时间戳
+  msg_type: 0,                           // 0普通 1礼物 2系统 3上舰
+  priority: 1,                           // 优先级，高优先级不抽样
+  status: 0,
+  create_time: ISODate("2026-01-15T10:30:00Z")
+}
+
+// 索引设计
+db.danmu_live.createIndex({ room_id: 1, server_ts: -1 })     // 按房间+时间查询
+db.danmu_live.createIndex({ status: 1, server_ts: 1 })       // 审核扫描
+db.danmu_live.createIndex({ create_time: 1 }, { expireAfterSeconds: 30*86400 }) // 30天 TTL 自动过期
+
+// 分片策略：按 room_id 哈希分片
+sh.shardCollection("danmu.danmu_live", { room_id: "hashed" })
 ```
 
 ### 3.4 审核与墓碑表
@@ -402,7 +426,7 @@ flowchart TD
     end
 
     subgraph 存储层
-      MySQL["MySQL 32库\ndanmu_vod 分库分表"]
+      MongoDB["MongoDB 分片集群\ndanmu_vod + danmu_live"]
       TiKV["TiKV 集群\n冷弹幕/LSM高写入"]
       OSS["OSS Parquet\n>90天归档"]
       ES["ES 审核日志"]
@@ -431,12 +455,12 @@ flowchart TD
     MQ --> SVC_COUNT
 
     SVC_AUDIT_AI --> R_TOMB
-    SVC_AUDIT_AI --> MySQL
-    SVC_WORKER  --> MySQL
+    SVC_AUDIT_AI --> MongoDB
+    SVC_WORKER  --> MongoDB
     SVC_WORKER  --> TiKV
 
     SVC_PULL --> R_VOD
-    SVC_PULL --> MySQL
+    SVC_PULL --> MongoDB
     SVC_PULL --> CDN
     SVC_PULL --> R_TOMB
 
@@ -446,7 +470,7 @@ flowchart TD
     SVC_ROOM --> ETCD
 
     SVC_WORKER --> ES
-    MySQL --> TiKV
+    MongoDB --> TiKV
     TiKV  --> OSS
 ```
 
@@ -454,9 +478,9 @@ flowchart TD
 
 1. **点播拉 / 直播推，两条链路物理隔离**：避免大型直播的长连接风暴冲击点播缓存
 2. **WS长链接服务 层无业务逻辑**：仅做协议解码、鉴权、路由、房间内广播，内存占用线性可预期
-3. **发送链路不阻塞推送链路**：发送服务写入 Redis 后立即投递 RocketMQ 广播 Topic，Job 路由层分发至相关 WS长链接服务 节点；MQ + MySQL 落盘异步
+3. **发送链路不阻塞推送链路**：发送服务写入 Redis 后立即投递 RocketMQ 广播 Topic，Job 路由层分发至相关 WS长链接服务 节点；MQ + MongoDB 落盘异步
 4. **审核双通道**：关键词同步（命中直接拒绝）+ AI 异步（命中后墓碑下架），兼顾体验与安全
-5. **冷热分层**：热 Redis、温 MySQL、冷 TiKV、归档 OSS，单条弹幕一辈子走完四层
+5. **冷热分层**：热 Redis、温 MongoDB、冷 TiKV、归档 OSS，单条弹幕一辈子走完四层
 
 ---
 
@@ -526,7 +550,7 @@ flowchart TD
      ↓
    4.冷热数据分支
    ├─ 热数据在Redis → 直接复用结果
-   └─ 冷数据不在Redis → 查MySQL索引idx_video_bucket
+   └─ 冷数据不在Redis → 查MongoDB索引(video_id+bucket_id)
       若已归档 → 下沉查询 TiKV
      ↓
    5.结果Protobuf打包，回写CDN边缘缓存 TTL=5min
@@ -657,7 +681,7 @@ func (g *Gateway) onJobPush(roomID int64, msg *DanmuMsg) {
 
 ### 5.3.1 频控与抽样机制深度解析（业界实现）
 
-#### 一、本地频控的业界实现
+**一、本地频控的业界实现**
 
 **本地频控 = 进程内存中的限流，不依赖任何外部服务（Redis/DB），延迟 < 0.01ms。**
 
@@ -697,7 +721,7 @@ func (g *Gateway) onClientMsg(conn *Conn, msg *DanmuMsg) {
 
 ---
 
-#### 二、全局频控限流的业界实现
+**二、全局频控限流的业界实现**
 
 **全局频控 = 基于 Redis 的分布式限流，保证无论用户连到哪个 Gateway 节点，其总发送速率受限。**
 
@@ -768,7 +792,7 @@ CL.THROTTLE rate:user:{uid} 5 5 10
 
 ---
 
-#### 三、"节点级流量合并+抽样降级"——客户端最终收到多少条？
+**三、"节点级流量合并+抽样降级"——客户端最终收到多少条？**
 
 > **常见误解：** 500万在线，100个副本，每个节点按"5s滑动窗口，超1000条/s 按权重抽样保留30%"，那汇集到客户端的弹幕是 100×1000条/s？
 
@@ -825,7 +849,7 @@ CL.THROTTLE rate:user:{uid} 5 5 10
 
 ---
 
-#### 四、业界真正的解法：多层漏斗 + 客户端最终兜底
+**四、业界真正的解法：多层漏斗 + 客户端最终兜底**
 
 ```
 层级 1：发送侧限流
@@ -869,7 +893,7 @@ CL.THROTTLE rate:user:{uid} 5 5 10
 
 ---
 
-#### 五、字节方案"两级抽样"详解（业界最优解）
+**五、字节方案"两级抽样"详解（业界最优解）**
 
 ```
 发送 20万条/s（大房间全量）
@@ -922,7 +946,7 @@ CL.THROTTLE rate:user:{uid} 5 5 10
 
 ---
 
-#### 六、总结对比
+**六、总结对比**
 
 | 问题 | 核心答案 |
 |------|---------|
@@ -932,11 +956,11 @@ CL.THROTTLE rate:user:{uid} 5 5 10
 
 ---
 
-#### 七、为什么业界不在 MQ 之前做抽样？
+**七、为什么业界不在 MQ 之前做抽样？**
 
 直觉上"越早丢弃越省资源"是对的，但业界不这么做有深层的系统设计原因。
 
-##### 核心原因：MQ 之后有多个消费者，各自需求不同
+**核心原因：MQ 之后有多个消费者，各自需求不同**
 
 ```
                                     ┌──────────────┐
@@ -954,7 +978,7 @@ CL.THROTTLE rate:user:{uid} 5 5 10
 
 **如果在 MQ 之前抽样，所有下游消费者都丢数据。** 这是最根本的原因——抽样是"推送服务"一个人的需求，不能让它绑架所有人。
 
-##### 详细原因拆解
+**详细原因拆解**
 
 **1. 合规与审核：一条都不能漏**
 
@@ -1002,7 +1026,7 @@ MQ带宽成本 vs 推送带宽成本：
 在推送前抽样：省了 99GB/s（这才有意义）
 ```
 
-##### 频控 vs 抽样：概念辨析
+**频控 vs 抽样：概念辨析**
 
 业界确实有在 Gateway 层做"**前置拦截**"的，但那不是"抽样"，而是**频控/限流**——这是两个不同的概念：
 
@@ -1019,7 +1043,7 @@ MQ带宽成本 vs 推送带宽成本：
 抽样丢弃的是"正常消息"——存储和审核都需要，只是不全量推送
 ```
 
-##### 结论
+**结论**
 
 ```
 MQ前做频控 ✓（拦截非法流量，保护系统）
@@ -1098,7 +1122,7 @@ AI 审核 Worker:
 | Topic | 分区 | 用途 | 优先级 | 消费模式 |
 |-------|------|------|-------|---------|
 | `topic_danmu_live_broadcast` | 256 | **直播弹幕实时广播**（发送服务 → Job 路由层 → WS长链接服务） | **P0**（延迟敏感） | 集群消费（每条消息只被一个 Job 消费，Job 查路由表分发） |
-| `topic_danmu_send_persist_vod` | 64 | 点播弹幕落 MySQL | P1 | 集群 |
+| `topic_danmu_send_persist_vod` | 64 | 点播弹幕落 MongoDB | P1 | 集群 |
 | `topic_danmu_send_persist_live` | 128 | 直播弹幕落 TiKV | P2（允许延迟） | 集群 |
 | `topic_danmu_audit` | 32 | AI 审核 | P0（涉及违规） | 集群 |
 | `topic_danmu_count` | 16 | 弹幕计数视图更新 | P3 | 集群 |
@@ -1111,7 +1135,7 @@ AI 审核 Worker:
 - 失败重试 3 次后进入本地补偿表，定时扫描重投
 
 **消费者：**
-- 幂等：以 `danmu_id` 作唯一键，MySQL `INSERT IGNORE` 或 `ON DUPLICATE KEY UPDATE`
+- 幂等：以 `danmu_id` 作唯一键，MongoDB `insertMany` with `ordered: false`（重复 _id 自动跳过）
 - 批量消费：落盘 Worker 一次消费 100 条，合并为单条 INSERT 语句（TiKV 支持批写）
 - ACK 策略：手动 ACK，处理失败入重试队列，重试 5 次后进死信
 
@@ -1262,20 +1286,24 @@ Job 路由层负载（常态）：
 - 直播：单房间单 Key，迁移前先暂停该房间写入（通过开关），迁移完成切换
 - 预案：大型赛事前 72 小时完成分片扩容并压测
 
-### 10.3 DB 扩容
-- 按 `video_id % 256`  到 `video_id % 512` 需要双写迁移窗口（约 1 周）
-- 新库只对 `video_id` 取模 512 余 ≥ 256 的生效，历史数据不迁移，新写入按新规则落库
-- 读路径双查合并（Router 层维护双规则），直到旧库退役
+### 10.3 MongoDB 弹幕集群扩容
+- **水平扩容（加分片）**：MongoDB 原生支持在线加分片，balancer 自动迁移 chunk，业务零感知
+  - 扩容触发条件：单分片存储 > 2TB 或单分片 QPS > 安全水位 70%
+  - 扩容过程：`sh.addShard("shard-new:27017")`，balancer 自动将热点 chunk 拆分并迁移到新分片
+  - 扩容期间读写正常，迁移中的 chunk 会短暂锁定（毫秒级），对业务透明
+- **垂直扩容（升配）**：WiredTiger 缓存随内存线性扩展，升配后自动利用
+- **对比 MySQL 分库分表扩容**：MySQL 从 256 表扩到 512 表需双写迁移窗口（约1周）+ Router 层改规则；MongoDB 扩容全自动无侵入
+- **预案**：大型赛事前 72 小时完成加分片 + 预分裂热点 chunk 并压测
 
 ### 10.4 冷热归档
 ```
 实时层: Redis (30s~24h)
     ↓ 每 10 分钟批落
-热表: MySQL (7 天)
-    ↓ 每日凌晨归档
-温表: TiKV (7~90 天)
+热表: MongoDB (近1年)
+    ↓ TTL 索引自动过期 + 定期迁移
+温表: TiKV (1~5年)
     ↓ 每月归档
-冷归档: OSS Parquet (>90 天)
+冷归档: OSS Parquet (>5年)
 ```
 
 ### 10.5 MQ 弹性
@@ -1483,7 +1511,7 @@ Gateway 内存广播:      ≈ 5ms
 :::warning
 ① 直播场景（强实时）：
 - AI 判定违规后：
-  - `UPDATE danmu SET status=2` (MySQL)
+  - `UPDATE danmu status=2` (MongoDB updateOne)
   - `SADD danmu:tombstone:live:{room_id} {danmu_id}` (Redis)
   - **投递删除指令到 RocketMQ**：`topic_danmu_live_broadcast` 消息体 `{"type":"delete","room_id":xxx,"id":danmu_id}`
 - Job 路由层消费删除指令后，按路由表推送到所有持有该房间连接的 WS长链接服务 节点
@@ -1501,7 +1529,7 @@ Gateway 内存广播:      ≈ 5ms
 
 ③ 墓碑 Set 容量控制：
 - 单视频违规率 < 0.1%，墓碑 Set 即使千万弹幕也只有万级 ID，数 MB 级别
-- 墓碑 TTL 24h（直播）/ 30天（点播），过期后弹幕状态已经同步到 MySQL，从冷链路过滤
+- 墓碑 TTL 24h（直播）/ 30天（点播），过期后弹幕状态已经同步到 MongoDB，从冷链路过滤
 
 ④ 性能：
 - 删除指令与普通弹幕共用同一个 `topic_danmu_live_broadcast`，但标记为高优先级（msg_type=delete），Job 路由层优先处理
@@ -1553,31 +1581,30 @@ Gateway 内存广播:      ≈ 5ms
 ⑤ 面试可以提字节自研的 "Netpoll"、B 站 Goim 等长连接框架，都是类似思路。
 :::
 
-### Q7：点播弹幕按 `video_id % 256` 分表，但热门视频（头部 TOP 100）的弹幕占全站 80%，分完仍然热点集中在这 100 张表上，这个分表方案是不是失败了？怎么办？
+### Q7：点播弹幕按 `video_id` 哈希分片，但热门视频（头部 TOP 100）的弹幕占全站 80%，分片后仍然热点集中在少数 chunk 上，怎么办？
 
-**参考答案：承认分表无法消除业务热点，需要"业务分片+冷热分层+LSM 替代"组合拳。**
+**参考答案：承认分片无法消除业务热点，需要"业务路由+冷热分层+独立集合"组合拳。**
 
 :::warning
-① 直面问题：按 `video_id` 分表天然无法消除"单视频热点"，这是数据分布决定的。MySQL 分表解决的是**数据量**问题（单表 > 1亿行的性能衰退），不是**流量**问题。
+① 直面问题：按 `video_id` 哈希分片天然无法消除"单视频热点"，这是数据分布决定的。MongoDB 分片解决的是**数据量**问题（单分片存储/QPS 上限），不是**业务热点**问题。
 
 ② 真实落地方案：
 
-**方案A：按 video_id + time_bucket 复合分表（推荐）**
-- 对热门视频单独分出二级表：`danmu_vod_hot_{video_id}_{month}`
-- 热门视频白名单维护在 ETCD，写入时 Router 识别走专属表
-- 专属表按月滚动，每月新建，历史月份只读
-- 优点：单表稳定在百万级行，查询走月份 + offset_ms 索引，毫秒级
-- 缺点：需要动态建表，运维复杂
+**方案A：热门视频独立集合 + 路由隔离（推荐，B站方案）**
+- 热门视频白名单维护在 ETCD，写入时 Router 识别走独立集合：`danmu_vod_hot_{video_id}`
+- 独立集合部署在独立 MongoDB 副本集（物理隔离，热点不影响普通视频）
+- 按月 TTL 自动过期，历史月份归档到 TiKV
+- 优点：热点完全隔离，普通视频集群稳定
+- 缺点：需要路由逻辑维护热门视频白名单
 
-**方案B：LSM 架构替代 MySQL（字节生产正在推进）**
-- 热点视频弹幕直接写入 TiKV/HBase，LSM 架构天然适合时序重写入
-- 单个 Region 可承载 10万+ TPS 写入
-- MySQL 仅存非热点视频，减少维护压力
+**方案B：Redis 缓冲 + 批量落盘（当前方案已实现）**
+- 热门视频弹幕 Redis 缓冲后，批量（1万条/批）insertMany 落 MongoDB
+- 高峰 10万 TPS 降为批量写入，MongoDB 分片无压力
+- 代价：Redis 宕机会丢数据，需要本地 WAL 兜底
 
-**方案C：Redis + 异步批量落（缓解）**
-- 热门视频弹幕 Redis 缓冲 1 小时，批量（1万条/批）落 DB
-- 高峰 10万 TPS 降为 1 TPS 批量写入，MySQL 主库完全无压力
-- 代价：1 小时内 Redis 宕机会丢数据，需要本地 WAL 兜底
+**方案C：冷热分层提前迁移**
+- 热门视频弹幕超过 1 亿条时，旧数据提前迁移到 TiKV 冷存
+- MongoDB 只保留最近 30 天热数据，控制单 chunk 数据量
 
 ③ 数据闭环：
 ```
