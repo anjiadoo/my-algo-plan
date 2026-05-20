@@ -5,20 +5,20 @@
 
 ---
 
-## 10个关键技术决策
+**关键技术决策**
 
-| # | 决策 | 选择 | 核心理由 |
-|---|------|------|---------|
-| 1 | **四级冷热分层存储** | 内存时间轮（<30min）→ Redis ZSet（<1天）→ MySQL 分表（<7天）→ 对象存储归档（>7天） | 全量放 Redis 需 35TB 内存不现实；全量放 DB 单次扫描亿级数据 P99 崩溃；分层后热数据高频扫描、冷数据低频加载 |
-| 2 | **分层时间轮 HashedWheelTimer** | Netty 风格多级轮（秒/分/时三级），tick=1s，wheelSize=60 | 纯 Redis ZSet 扫描方案在百万/秒到期时 ZRANGEBYSCORE O(logN+M) 会把单分片 CPU 打满；时间轮 O(1) 触发 |
-| 3 | **分桶 owner 一致性哈希 + Raft 选主** | 按 bucket_id = task_id % 1024 分桶，每桶由一台 Scheduler 独占（Raft 选主），宕机自动切换；**bucket_id 与分库键对齐：shard_id = bucket_id % 64** | 纯无状态调度会导致多节点重复扫描同一 ZSet；分桶 owner 保证"一个任务在一个时刻只被一台机器调度"，从架构上消除重复触发；对齐分库键保证 Loader 只需查单库 |
-| 4 | **两阶段 ACK 防丢任务** | Phase1：时间轮触发→写 WAL→投递 MQ；Phase2：业务消费 ACK 后更新 DB 状态为 TRIGGERED | 进程 crash 时 WAL 可重放；MQ 投递失败时 WAL 定时任务扫描补偿；不用 DB 事务是因为触发链路不能走 DB |
-| 5 | **Tombstone 墓碑取消机制** | 取消任务不物理删除，写入 cancel_set（Redis Set，TTL=max(trigger_time-now,0)+7200），触发前校验 | 任务可能已被 Loader 加载到内存时间轮，物理删除追不上；墓碑 O(1) 校验+自动过期回收 |
-| 6 | **ZSet 分钟分桶 + Hash 分片** | Key = `delay:bucket:{minute_ts}:{shard_id}`，shard_id = task_id % 64 | 单分钟 50万任务集中在一个 Key 导致大 Key（300MB+）、全分片复制超时；按 task_id hash 分 64 片后单 Key ≤ 5MB |
-| 7 | **同任务同队列 RocketMQ 路由** | producer.key = task_id，保证同一任务的触发/取消/重试消息有序；**队列数一次性预留 256，禁止在线扩队列** | 防止 "取消消息比触发消息先到达消费者" 的 ABA 问题；RocketMQ 原生延迟消息天然支持重试梯度（1s/5s/30s/5m/1h）；消费者按任务 id 串行处理 |
-| 8 | **写入削峰 WAL 日志 + 异步落库** | 前端写 RocketMQ→Loader 消费写 Redis+DB，不直接同步写 DB；**API 同步写 Redis meta 保证可查** | 50万 QPS 直写 DB 需 100+ 主库；RocketMQ 削峰后消费侧受控 10万 TPS，16主库即可 |
-| 9 | **租户配额 + 令牌桶隔离** | 每租户独立令牌桶（写入/触发双桶），超额返回 429，不影响其他租户 | 多租户平台核心诉求；单租户大促时独占资源会把其他租户延时任务拖慢 |
-| 10 | **日级对账 + 丢任务率 SLA** | 每日扫描所有非终态超时任务（PENDING 超 10min / LOADED 超 1h / TRIGGERED 超 2h），>0 触发 P0 告警 | 丢任务 = 用户订单没关、红包没退 = 资损；SLA：丢任务率 < 1e-7（亿分之一） |
+| 决策 | 选择 | 核心理由 |
+|------|------|---------|
+| **四级冷热分层存储** | 内存时间轮（<30min）→ Redis ZSet（<1天）→ MySQL 分表（<7天）→ 对象存储归档（>7天） | 全量放 Redis 需 35TB 内存不现实；全量放 DB 单次扫描亿级数据 P99 崩溃；分层后热数据高频扫描、冷数据低频加载 |
+| **分层时间轮 HashedWheelTimer** | Netty 风格多级轮（秒/分/时三级），tick=1s，wheelSize=60 | 纯 Redis ZSet 扫描方案在百万/秒到期时 ZRANGEBYSCORE O(logN+M) 会把单分片 CPU 打满；时间轮 O(1) 触发 |
+| **分桶 owner 一致性哈希 + Raft 选主** | 按 bucket_id = task_id % 1024 分桶，每桶由一台 Scheduler 独占（Raft 选主），宕机自动切换；**bucket_id 与分库键对齐：shard_id = bucket_id % 64** | 纯无状态调度会导致多节点重复扫描同一 ZSet；分桶 owner 保证"一个任务在一个时刻只被一台机器调度"，从架构上消除重复触发；对齐分库键保证 Loader 只需查单库 |
+| **两阶段 ACK 防丢任务** | Phase1：时间轮触发→写 WAL→投递 MQ；Phase2：业务消费 ACK 后更新 DB 状态为 TRIGGERED | 进程 crash 时 WAL 可重放；MQ 投递失败时 WAL 定时任务扫描补偿；不用 DB 事务是因为触发链路不能走 DB |
+| **Tombstone 墓碑取消机制** | 取消任务不物理删除，写入 cancel_set（Redis Set，TTL=max(trigger_time-now,0)+7200），触发前校验 | 任务可能已被 Loader 加载到内存时间轮，物理删除追不上；墓碑 O(1) 校验+自动过期回收 |
+| **ZSet 分钟分桶 + Hash 分片** | Key = `delay:bucket:{minute_ts}:{shard_id}`，shard_id = task_id % 64 | 单分钟 50万任务集中在一个 Key 导致大 Key（300MB+）、全分片复制超时；按 task_id hash 分 64 片后单 Key ≤ 5MB |
+| **同任务同队列 RocketMQ 路由** | producer.key = task_id，保证同一任务的触发/取消/重试消息有序；**队列数一次性预留 256，禁止在线扩队列** | 防止 "取消消息比触发消息先到达消费者" 的 ABA 问题；RocketMQ 原生延迟消息天然支持重试梯度（1s/5s/30s/5m/1h）；消费者按任务 id 串行处理 |
+| **写入削峰 WAL 日志 + 异步落库** | 前端写 RocketMQ→Loader 消费写 Redis+DB，不直接同步写 DB；**API 同步写 Redis meta 保证可查** | 50万 QPS 直写 DB 需 100+ 主库；RocketMQ 削峰后消费侧受控 10万 TPS，16主库即可 |
+| **租户配额 + 令牌桶隔离** | 每租户独立令牌桶（写入/触发双桶），超额返回 429，不影响其他租户 | 多租户平台核心诉求；单租户大促时独占资源会把其他租户延时任务拖慢 |
+| **日级对账 + 丢任务率 SLA** | 每日扫描所有非终态超时任务（PENDING 超 10min / LOADED 超 1h / TRIGGERED 超 2h），>0 触发 P0 告警 | 丢任务 = 用户订单没关、红包没退 = 资损；SLA：丢任务率 < 1e-7（亿分之一） |
 
 ---
 

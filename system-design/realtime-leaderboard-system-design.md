@@ -3,20 +3,20 @@
 
 ---
 
-## 10个关键技术决策
+**10个关键技术决策**
 
-| # | 决策 | 选择 | 核心理由 |
-|---|------|------|---------|
-| 1 | **ZSet 分层维护** | 只维护 Top-10万 ZSet（280MB），10万名外走 DB COUNT 估算 | 全量5000万用户 ZSet 需3.6GB/榜单，主从全量同步阻塞数十秒；95%用户在10万名外，估算精度对其影响可忽略 |
-| 2 | **分桶 ZSet + 后台归并** | 写入分散到64个分桶 ZSet，每500ms 后台 ZUNIONSTORE 归并 | 300万 ZADD/s ÷ 64分桶 = 4.7万/分桶（< 10万安全上限）；读走归并结果，允许500ms延迟 |
-| 3 | **好友榜 Pipeline 批量取分 + 缓存** | Pipeline ZSCORE 批量取5000好友分数 + 内存排序，结果缓存30s | 5000次 ZSCORE Pipeline 合并为1次 RTT（< 5ms），内存排序 O(5000×log5000) < 1ms；无需 ZUNIONSTORE，复杂度从 O(N×logK) 降至 O(K)（K=好友数） |
-| 4 | **双 ZSet + RENAME 原子快照** | 赛季结算：先关闭上报开关→等 in-flight 结束→RENAME active→snapshot | RENAME 是 O(1) 原子操作，快照时刻误差为0；直接读取快照期间仍有写入，误差无法消除 |
-| 5 | **Pipeline 多榜单写入** | 单次上报影响3个榜单（全局+省+市），Pipeline 打包为1次网络 RTT | Pipeline 不保证原子性但减少 RTT，3个 ZADD 串行需3× RTT（约3ms），Pipeline 只需1次（约1ms） |
-| 6 | **分数时间戳编码解决并列** | score = score × 1e10 + (MAX_TS - timestamp)，先达到分数者排名靠前 | ZSet 同 score 按字典序排，不符合"先达到先领奖"直觉；时间戳编码到低位，高位分数仍主导排序 |
-| 7 | **双层幂等防重复计分** | Redis SETNX（快速路径，TTL=24h）+ DB 唯一索引（最终保障） | Redis 宕机幂等Key丢失时，DB uk_board_uid_biz 兜底；不能只依赖 Redis 单层幂等 |
-| 8 | **得分消息同分区路由** | 同一 uid+board_id 的消息路由到同一 Kafka 分区 | 保证单用户得分消息有序消费，防止 score_after 字段乱序写入 DB（旧值覆盖新值） |
-| 9 | **非 Top-N 排名分段计数估算** | 将分值域划分为100个等宽段，每段维护 Redis 计数器，查排名时汇总高分段 | DB COUNT(*) WHERE score > ? 在32库中需路由单库执行（156万行），P99约5-20ms；分段计数 O(50次 HGET) < 1ms |
-| 10 | **反作弊 Flink 实时流** | 单账号限流（L1）+ biz_id 真实性校验（L2）+ Flink 群体关联分析（L3）+ 展示过滤（L4） | 单账号限流拦不住多账号协同刷榜；Flink 规则：同设备3账号/biz_id重叠率>30%/操作时间间隔方差<1s |
+| 决策 | 选择 | 核心理由 |
+|------|------|---------|
+| **ZSet 分层维护** | 只维护 Top-10万 ZSet（280MB），10万名外走 DB COUNT 估算 | 全量5000万用户 ZSet 需3.6GB/榜单，主从全量同步阻塞数十秒；95%用户在10万名外，估算精度对其影响可忽略 |
+| **分桶 ZSet + 后台归并** | 写入分散到64个分桶 ZSet，每500ms 后台 ZUNIONSTORE 归并 | 300万 ZADD/s ÷ 64分桶 = 4.7万/分桶（< 10万安全上限）；读走归并结果，允许500ms延迟 |
+| **好友榜 Pipeline 批量取分 + 缓存** | Pipeline ZSCORE 批量取5000好友分数 + 内存排序，结果缓存30s | 5000次 ZSCORE Pipeline 合并为1次 RTT（< 5ms），内存排序 O(5000×log5000) < 1ms；无需 ZUNIONSTORE，复杂度从 O(N×logK) 降至 O(K)（K=好友数） |
+| **双 ZSet + RENAME 原子快照** | 赛季结算：先关闭上报开关→等 in-flight 结束→RENAME active→snapshot | RENAME 是 O(1) 原子操作，快照时刻误差为0；直接读取快照期间仍有写入，误差无法消除 |
+| **Pipeline 多榜单写入** | 单次上报影响3个榜单（全局+省+市），Pipeline 打包为1次网络 RTT | Pipeline 不保证原子性但减少 RTT，3个 ZADD 串行需3× RTT（约3ms），Pipeline 只需1次（约1ms） |
+| **分数时间戳编码解决并列** | score = score × 1e10 + (MAX_TS - timestamp)，先达到分数者排名靠前 | ZSet 同 score 按字典序排，不符合"先达到先领奖"直觉；时间戳编码到低位，高位分数仍主导排序 |
+| **双层幂等防重复计分** | Redis SETNX（快速路径，TTL=24h）+ DB 唯一索引（最终保障） | Redis 宕机幂等Key丢失时，DB uk_board_uid_biz 兜底；不能只依赖 Redis 单层幂等 |
+| **得分消息同分区路由** | 同一 uid+board_id 的消息路由到同一 Kafka 分区 | 保证单用户得分消息有序消费，防止 score_after 字段乱序写入 DB（旧值覆盖新值） |
+| **非 Top-N 排名分段计数估算** | 将分值域划分为100个等宽段，每段维护 Redis 计数器，查排名时汇总高分段 | DB COUNT(*) WHERE score > ? 在32库中需路由单库执行（156万行），P99约5-20ms；分段计数 O(50次 HGET) < 1ms |
+| **反作弊 Flink 实时流** | 单账号限流（L1）+ biz_id 真实性校验（L2）+ Flink 群体关联分析（L3）+ 展示过滤（L4） | 单账号限流拦不住多账号协同刷榜；Flink 规则：同设备3账号/biz_id重叠率>30%/操作时间间隔方差<1s |
 
 ---
 
@@ -959,7 +959,7 @@ Redis ZSet 并列行为：
   - 仅返回昨日快照数据（来自 board_snapshot 表）
 ```
 
-### 动态配置开关（ETCD，秒级生效）
+### 动态配置开关
 
 ```yaml
 lb.switch.global: true              # 全局排行榜开关

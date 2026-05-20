@@ -3,7 +3,7 @@
 
 ---
 
-## 10个关键技术决策
+**10个关键技术决策**
 
 | 决策 | 选择 | 核心理由 |
 |------|------|---------|
@@ -1757,7 +1757,7 @@ WHERE pool_id=? AND item_id=? AND used_stock < total_stock AND version=?;
 | 概率异常/Bug | 一键下线奖池 + 版本回滚 | 活动暂停 | 人工处理 |
 | 奖池全部道具被过滤 | complement 兜底概率组 | 获得通用奖励 | 自动 |
 
-### 15.4 动态配置开关（ETCD，秒级生效）
+### 15.4 动态配置开关
 
 ```yaml
 lottery.switch.global: true           # 全局抽奖开关

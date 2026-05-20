@@ -1012,7 +1012,7 @@ ZREVRANGEBYSCORE cm:list:{object_id} {cursor_score} -inf LIMIT 0 20
   - 开启静态页兜底（"评论服务维护中，请稍后再试"）
 ```
 
-### 9.4 动态配置开关（ETCD，秒级生效）
+### 9.4 动态配置开关
 
 ```yaml
 cm.switch.global: true             # 全局评论开关
@@ -1148,7 +1148,7 @@ cm.limit.write_qps: 500000         # 全局写评论 QPS 上限
   - 评论计数允许跨城市 < 1s 延迟（最终一致）
 ```
 
-### 11.2 核心监控指标（Prometheus + Grafana）
+### 11.2 核心监控指标
 
 **评论读链路（最核心，直接影响用户体验）：**
 
