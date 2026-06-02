@@ -39,30 +39,28 @@ WeDo 是一款面向微信/QQ 生态的游戏社交平台。**车队（Convoy）
 └──────────────────────────────┬──────────────────────────────────────────┘
                                │ HTTP (tRPC)
                                ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    推荐服务 (Go / tRPC)  :30000                           │
-│                                                                          │
-│   ┌──────────────┐     ┌──────────────────────────────────┐              │
-│   │ RequestDecoder│───▶│         DAG Graph Engine         │              │
-│   └──────────────┘     │  (RecDAG / graph.toml 驱动)       │              │
-│                        │                                  │              │
-│   ┌──────────────┐     │  configstore → Redis → ES →      │              │
-│   │ResponseComposer◀───│  merge → setAttr → cache         │              │
-│   └──────────────┘     └──────────────────────────────────┘              │
-│                                    │ │ │                                 │
-└────────────────────────────────────┼─┼─┼─────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    推荐服务 (Go / tRPC)  :30000                          │
+│                                                                        │
+│   ┌──────────────┐     ┌──────────────────────────────────┐            │
+│   │ RequestDecoder│───▶│         DAG Graph Engine         │            │
+│   └──────────────┘     │  (RecDAG / graph.toml 驱动)       │            │
+│                        │                                  │            │
+│   ┌──────────────┐     │  configstore → Redis → ES →      │            │
+│   │ResponseComposer◀───│  merge → setAttr → cache         │            │
+│   └──────────────┘     └──────────────────────────────────┘            │
+│                                    │ │ │                               │
+└────────────────────────────────────┼─┼─┼───────────────────────────────┘
                                      │ │ │
           ┌──────────────────────────┘ │ └─────────────────────────┐
           ▼                            ▼                           ▼
 ┌──────────────────┐       ┌──────────────────┐        ┌─────────────────┐
-│  ConfigStore     │       │  Redis (TendisPlus│        │ Elasticsearch  │
-│  (配置中心)       │       │  推荐/SNS集群)     │        │ (车队索引)       │
-│  reason_config   │       │  - 好友关系链      │        │ wedo_convoy_env │
-└──────────────────┘       │  - 用户推荐缓存    │        │ wedo_video_rec  │
-                           │  - 车队标签       │         └─────────────────┘
-                           │  - 版本元数据      │                   ▲
-                           └──────────────────┘                   │
-                                     ▲                            │
+│  ConfigStore     │       │  Redis           │        │ Elasticsearch  │
+│  (配置中心)       │       │  - 好友关系链      │        │ (车队索引)       │
+│  reason_config   │       │  - 用户推荐缓存    │        │ wedo_convoy_env │
+└──────────────────┘       │  - 车队标签       │        │ wedo_video_rec  │
+                           └──────────────────┘        └─────────────────┘ 
+                                     ▲                            ▲
                                      │                            │
 ┌────────────────────────────────────┴────────────────────────────┴──────┐
 │                    Flink 实时数据处理层 (Java)                           │
@@ -79,7 +77,6 @@ WeDo 是一款面向微信/QQ 生态的游戏社交平台。**车队（Convoy）
 │  billow_ex_wedo_playerfriendslistflow (全量好友关系)                     │
 │  billow_ex_wedo_friendflow            (好友增量变更)                     │
 │  billow_ex_wedo_modifyconvoyflow      (车队变更流水)                     │
-│  billow_ex_wedo_pvpendflow            (PvP 对局结束)                    │
 └────────────────────────────────────────────────────────────────────────┘
                   ▲
 ┌─────────────────┴──────────────────────────────────────────────────────┐
@@ -115,10 +112,7 @@ WeDo 是一款面向微信/QQ 生态的游戏社交平台。**车队（Convoy）
   │              HeadRuid, MemberPublishConvoyList, CreateTime,
   │              JoinLimitType, ConvoyTagList, ...
   │
-  ├─► [PvP 对局数据]
-  │     Kafka: wedo_pvpendflow + wedo_uploadvideoflow
-  │     Flink: PvpToES
-  │     ES: wedo_video_rec_{env}
+  
 ```
 
 ### 数据读取链路（推荐服务）
@@ -131,7 +125,6 @@ WeDo 是一款面向微信/QQ 生态的游戏社交平台。**车队（Convoy）
   ├── DAG 并行执行
   │     ├── configstoreDataOp    → 加载 reason_config 推荐理由配置
   │     ├── gjsonPickStrOp       → 提取请求字段(roleid/areaid/envid/...)
-  │     ├── stringFormat*Op      → 生成 Redis Key 模板
   │     ├── redisMgetOp          → 批量拉离线推荐列表
   │     ├── redisHgetallOp       → 获取好友关系哈希、车队标签
   │     ├── customEsGetOp        → 查询 ES 车队详情
