@@ -250,22 +250,60 @@
 package main
 
 import (
-	"container/heap"
 	"fmt"
 )
 
-type PriorityQueue []*ListNode
+type PriorityQueue struct {
+	Array []*ListNode
+}
 
-func (pq PriorityQueue) Len() int            { return len(pq) }
-func (pq PriorityQueue) Less(i, j int) bool  { return pq[i].Val < pq[j].Val }
-func (pq PriorityQueue) Swap(i, j int)       { pq[i], pq[j] = pq[j], pq[i] }
-func (pq *PriorityQueue) Push(x interface{}) { *pq = append(*pq, x.(*ListNode)) }
-func (pq *PriorityQueue) Pop() interface{} {
-	old := *pq
-	n := len(old)
-	x := old[n-1]
-	*pq = old[0 : n-1]
-	return x
+func (pq *PriorityQueue) Push(e *ListNode) {
+	pq.Array = append(pq.Array, e)
+	pq.siftUp(len(pq.Array) - 1)
+}
+
+func (pq *PriorityQueue) Pop() *ListNode {
+	if len(pq.Array) == 0 {
+		return nil
+	}
+	e := pq.Array[0]
+	last := len(pq.Array) - 1
+	pq.Array[0], pq.Array[last] = pq.Array[last], pq.Array[0]
+
+	pq.Array = pq.Array[:last]
+	if len(pq.Array) > 0 {
+		pq.siftDown(len(pq.Array), 0)
+	}
+	return e
+}
+
+func (pq *PriorityQueue) siftUp(i int) {
+	for i > 0 {
+		parent := (i - 1) / 2
+		if pq.Array[i].Val > pq.Array[parent].Val {
+			break
+		}
+		pq.Array[parent], pq.Array[i] = pq.Array[i], pq.Array[parent]
+		i = parent
+	}
+}
+
+func (pq *PriorityQueue) siftDown(n int, i int) {
+	minIndex := i
+	left := 2*i + 1
+	right := 2*i + 2
+
+	if left < n && pq.Array[left].Val < pq.Array[minIndex].Val {
+		minIndex = left
+	}
+	if right < n && pq.Array[right].Val < pq.Array[minIndex].Val {
+		minIndex = right
+	}
+
+	if minIndex != i {
+		pq.Array[minIndex], pq.Array[i] = pq.Array[i], pq.Array[minIndex]
+		pq.siftDown(n, minIndex)
+	}
 }
 
 // 合并 K 个升序链表
@@ -279,20 +317,17 @@ func mergeKLists_(lists []*ListNode) *ListNode {
 	}
 
 	pq := &PriorityQueue{}
-	heap.Init(pq)
 	for _, list := range lists {
 		if list != nil {
-			heap.Push(pq, list)
+			pq.Push(list)
 		}
 	}
 
 	dummy := &ListNode{}
 	p := dummy
 
-	for pq.Len() > 0 {
-		x := heap.Pop(pq)
-		node := x.(*ListNode)
-
+	for len(pq.Array) > 0 {
+		node := pq.Pop()
 		next := node.Next
 		node.Next = nil
 
@@ -300,7 +335,7 @@ func mergeKLists_(lists []*ListNode) *ListNode {
 		p = p.Next
 
 		if next != nil {
-			heap.Push(pq, next)
+			pq.Push(next)
 		}
 	}
 
@@ -1084,26 +1119,29 @@ func isPalindrome(head *ListNode) bool {
 
 // 重排链表 https://leetcode.cn/problems/reorder-list/description/
 func reorderList(head *ListNode) {
-	var stack []*ListNode
-	for p := head; p != nil; p = p.Next {
-		stack = append(stack, p)
-	}
-
+	// 先把所有节点装进栈里，得到倒序结果
+	type stack []*ListNode
+	var stk stack
 	p := head
 	for p != nil {
-		tail := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+		stk = append(stk, p)
+		p = p.Next
+	}
 
-		// 结束条件
-		if p == tail || p.Next == tail {
-			tail.Next = nil
+	left := head
+	for left != nil {
+		// 链表尾部的节点
+		right := stk[len(stk)-1]
+		stk = stk[:len(stk)-1]
+		next := left.Next
+		if left == right || left.Next == right {
+			// 结束条件，链表节点数为奇数或偶数时均适用
+			right.Next = nil
 			break
 		}
-
-		next := p.Next
-		p.Next = tail
-		tail.Next = next
-		p = next
+		left.Next = right
+		right.Next = next
+		left = next
 	}
 }
 
