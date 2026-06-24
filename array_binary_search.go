@@ -645,7 +645,16 @@ func findClosestElements(arr []int, k int, x int) []int {
 	p := leftBound(arr, x)
 
 	// 因为p本身可能越界，选择两端都开的区间(left, right)【重要‼️】
+	// left=p-1, right=p 天然把最接近 x 的候选拆成左右两块：
+	// arr[left]：小于 x 的最大数（p 左边）
+	// arr[right]：大于等于 x 的最小数（二分左边界 p 的定义）
+	// (p-1, p) 是空双开区间，左右分别握着离 x 最近的一大一小两个候选；
+	// (p, p+1) 会丢掉左侧全部小于 x 的数字，逻辑失效。
+
 	left, right := p-1, p
+
+	// 下面👇 “x-arr[left] > arr[right]-x” 这个判断成立的前提是：
+	// left 永远在 x 左侧，right 永远在 x 右侧，只有初始化 left=p-1, right=p 才能满足。
 
 	// 扩展区间，直到区间内包含k个元素
 	for right-left-1 < k {
