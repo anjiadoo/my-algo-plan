@@ -322,6 +322,22 @@ func searchRange(nums []int, target int) []int {
 	return []int{leftIdx, rightIdx}
 }
 
+// 搜索插入位置 https://leetcode.cn/problems/search-insert-position/description/
+func searchInsert(nums []int, target int) int {
+	left, right := 0, len(nums)-1
+	for left <= right {
+		mid := left + (right-left)/2
+		if nums[mid] == target {
+			return mid
+		} else if nums[mid] > target {
+			right = mid - 1
+		} else if nums[mid] < target {
+			left = mid + 1
+		}
+	}
+	return left
+}
+
 /* 🌟什么时候可以运用二分搜索算法技巧❓
  *
  *   首先要能抽象出一个自变量 x，一个关于 x 的函数 f(x)，以及一个目标值 target。
@@ -567,131 +583,6 @@ func searchMatrixII(matrix [][]int, target int) bool {
 	return false
 }
 
-// 匹配子序列的单词数 https://leetcode.cn/problems/number-of-matching-subsequences/
-func numMatchingSubseq(s string, words []string) int {
-	// 对 s 进行预处理，记录 char -> 该 char 的索引列表
-	mapIndexs := make(map[byte][]int)
-	for i := range s {
-		if mapIndexs[s[i]] == nil {
-			mapIndexs[s[i]] = []int{}
-		}
-		mapIndexs[s[i]] = append(mapIndexs[s[i]], i)
-	}
-
-	leftBound := func(nums []int, target int) int {
-		left, right := 0, len(nums)-1
-		for left <= right {
-			mid := left + (right-left)/2
-			if nums[mid] == target {
-				right = mid - 1
-			} else if nums[mid] > target {
-				right = mid - 1
-			} else if nums[mid] < target {
-				left = mid + 1
-			}
-		}
-		return left
-	}
-
-	res := 0
-	for _, word := range words {
-		i := 0 // word的字符索引
-		j := 0 // s的字符索引
-		for i < len(word) {
-			ch := word[i]
-
-			indexList := mapIndexs[ch]
-			if indexList == nil {
-				break
-			}
-
-			// 二分搜索大于等于j的最小索引（s已经走到j-1的位置了）
-			// 即在 s[j..] 中搜索等于 word[i] 的最小索引
-			pos := leftBound(indexList, j)
-			if pos == len(indexList) {
-				break
-			}
-
-			// 找到 word[i] == s[j]，继续往后匹配
-			j = indexList[pos]
-
-			i++
-			j++
-		}
-		if i == len(word) {
-			res++
-		}
-	}
-	return res
-}
-
-// 找到 K 个最接近的元素 https://leetcode.cn/problems/find-k-closest-elements/
-func findClosestElements(arr []int, k int, x int) []int {
-	leftBound := func(nums []int, x int) int {
-		left, right := 0, len(nums)-1
-		for left <= right {
-			mid := left + (right-left)/2
-			if nums[mid] == x {
-				right = mid - 1
-			} else if nums[mid] > x {
-				right = mid - 1
-			} else if nums[mid] < x {
-				left = mid + 1
-			}
-		}
-		return left
-	}
-
-	p := leftBound(arr, x)
-
-	// 因为p本身可能越界，选择两端都开的区间(left, right)【重要‼️】
-	// left=p-1, right=p 天然把最接近 x 的候选拆成左右两块：
-	// arr[left]：小于 x 的最大数（p 左边）
-	// arr[right]：大于等于 x 的最小数（二分左边界 p 的定义）
-	// (p-1, p) 是空双开区间，左右分别握着离 x 最近的一大一小两个候选；
-	// (p, p+1) 会丢掉左侧全部小于 x 的数字，逻辑失效。
-
-	left, right := p-1, p
-
-	// 下面👇 “x-arr[left] > arr[right]-x” 这个判断成立的前提是：
-	// left 永远在 x 左侧，right 永远在 x 右侧，只有初始化 left=p-1, right=p 才能满足。
-
-	// 扩展区间，直到区间内包含k个元素
-	for right-left-1 < k {
-		if left == -1 {
-			right++
-		} else if right == len(arr) {
-			left--
-		} else if x-arr[left] > arr[right]-x {
-			right++
-		} else {
-			left--
-		}
-	}
-
-	var res []int
-	for i := left + 1; i < right; i++ {
-		res = append(res, arr[i])
-	}
-	return res
-}
-
-// 搜索插入位置 https://leetcode.cn/problems/search-insert-position/description/
-func searchInsert(nums []int, target int) int {
-	left, right := 0, len(nums)-1
-	for left <= right {
-		mid := left + (right-left)/2
-		if nums[mid] == target {
-			return mid
-		} else if nums[mid] > target {
-			right = mid - 1
-		} else if nums[mid] < target {
-			left = mid + 1
-		}
-	}
-	return left
-}
-
 // 寻找峰值 https://leetcode.cn/problems/find-peak-element/
 func findPeakElement(nums []int) int {
 	// 前提：对于所有有效的i都有nums[i] != nums[i+1] ⚠️
@@ -811,6 +702,115 @@ func findMin(nums []int) int {
 		}
 	}
 	return nums[left]
+}
+
+// 找到 K 个最接近的元素 https://leetcode.cn/problems/find-k-closest-elements/
+func findClosestElements(arr []int, k int, x int) []int {
+	leftBound := func(nums []int, x int) int {
+		left, right := 0, len(nums)-1
+		for left <= right {
+			mid := left + (right-left)/2
+			if nums[mid] == x {
+				right = mid - 1
+			} else if nums[mid] > x {
+				right = mid - 1
+			} else if nums[mid] < x {
+				left = mid + 1
+			}
+		}
+		return left
+	}
+
+	p := leftBound(arr, x)
+
+	// 因为p本身可能越界，选择两端都开的区间(left, right)【重要‼️】
+	// left=p-1, right=p 天然把最接近 x 的候选拆成左右两块：
+	// arr[left]：小于 x 的最大数（p 左边）
+	// arr[right]：大于等于 x 的最小数（二分左边界 p 的定义）
+	// (p-1, p) 是空双开区间，左右分别握着离 x 最近的一大一小两个候选；
+	// (p, p+1) 会丢掉左侧全部小于 x 的数字，逻辑失效。
+
+	left, right := p-1, p
+
+	// 下面👇 “x-arr[left] > arr[right]-x” 这个判断成立的前提是：
+	// left 永远在 x 左侧，right 永远在 x 右侧，只有初始化 left=p-1, right=p 才能满足。
+
+	// 扩展区间，直到区间内包含k个元素
+	for right-left-1 < k {
+		if left == -1 {
+			right++
+		} else if right == len(arr) {
+			left--
+		} else if x-arr[left] > arr[right]-x {
+			right++
+		} else {
+			left--
+		}
+	}
+
+	var res []int
+	for i := left + 1; i < right; i++ {
+		res = append(res, arr[i])
+	}
+	return res
+}
+
+// 匹配子序列的单词数 https://leetcode.cn/problems/number-of-matching-subsequences/
+func numMatchingSubseq(s string, words []string) int {
+	// 对 s 进行预处理，记录 char -> 该 char 的索引列表
+	mapIndexs := make(map[byte][]int)
+	for i := range s {
+		if mapIndexs[s[i]] == nil {
+			mapIndexs[s[i]] = []int{}
+		}
+		mapIndexs[s[i]] = append(mapIndexs[s[i]], i)
+	}
+
+	leftBound := func(nums []int, target int) int {
+		left, right := 0, len(nums)-1
+		for left <= right {
+			mid := left + (right-left)/2
+			if nums[mid] == target {
+				right = mid - 1
+			} else if nums[mid] > target {
+				right = mid - 1
+			} else if nums[mid] < target {
+				left = mid + 1
+			}
+		}
+		return left
+	}
+
+	res := 0
+	for _, word := range words {
+		i := 0 // word的字符索引
+		j := 0 // s的字符索引
+		for i < len(word) {
+			ch := word[i]
+
+			indexList := mapIndexs[ch]
+			if indexList == nil {
+				break
+			}
+
+			// 二分搜索大于等于j的最小索引（s已经走到j-1的位置了）
+			// 即在 s[j..] 中搜索等于 word[i] 的最小索引
+			pos := leftBound(indexList, j)
+			if pos == len(indexList) {
+				break
+			}
+
+			// 找到 word[i] == s[j]，继续往后匹配
+			j = indexList[pos]
+
+			i++
+			j++
+		}
+		if i == len(word) {
+			res++
+		}
+	}
+	return res
 }
 
 func main() {
