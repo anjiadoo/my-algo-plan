@@ -1507,6 +1507,349 @@ Harness Engineering（2025—）：整个任务怎么结构化推进、防崩、
 
 ---
 
+## 第九章：开发者的 Coding Agent 实战手册（2026 版）
+### "后端主视角 · 兼顾前端 · 全栈偏后端"
+
+前八章讲的是"AI 是怎么走到今天的"。这一章聚焦一线**后端 / 全栈偏后端**开发者的日常：如何把 Coding Agent 用在**接口设计、DB Migration、微服务、并发与事务、性能与可观测**这些真实场景里跑出生产力，同时兼顾前端页面 / BFF / SDK 这些偏前端的部分。所有实践来自 2025—2026 年 Anthropic、Cursor、Cognition、Sourcegraph、Thoughtworks、GitHub、Replit 及国内头部互联网厂商可复现的落地经验。
+
+**为什么单独强调后端视角**：后端代码的失败比前端贵——一次错误的 SQL 迁移、一次遗漏的事务边界、一次幂等性缺失，可能就是资损、脏数据或 P0 故障；而前端的失败大多可以刷新页面。**Coding Agent 的使用纪律必须匹配失败的成本**——后端更严、前端可以更放。
+
+### 9.1 心智模型：Agent 是一位刚入职的资深后端同事
+**最常见的两种认知错误**：
+
++ **"AI 是更聪明的搜索引擎"**——只贴问题不给领域上下文，Agent 产出的代码看起来能跑，但违反业务不变式（Invariant）、破坏事务边界。
++ **"AI 会取代我，抗拒使用"**——错过 2024—2026 这个能力放大最陡的窗口期，后端场景（Boilerplate、CRUD、迁移脚本、测试）的产能差距最容易拉到 3—5 倍。
+
+**正确心智模型**：Agent = 一位刚入职、能力强但**对你的领域模型、限流策略、DB 分库规则、上下游契约一无所知**的资深后端工程师。你要给的是：**背景 · 目标 · 约束 · 验收**——onboard 真人时缺什么，Agent 就缺什么。
+
+**四种协作模式**（按自主度递增，选择依据是**改动是否可回滚 + 影响面是否可控**）：
+
+| 模式 | 谁做主 | 典型后端场景 | 典型前端场景 | 适用工具 |
+| --- | --- | --- | --- | --- |
+| **Autocomplete** | 人主导 | DTO / VO 补全、if-err 样板 | JSX 结构、Tailwind 类名 | Copilot、Tabnine |
+| **In-the-Loop（对话）** | 人主导，AI 出草案 | 陌生框架的接口写法、SQL 优化建议 | 组件抽取、CSS 布局调整 | Cursor Chat、Windsurf |
+| **On-the-Loop（Agent 自主）** | AI 主导，人审关键节点 | 明确 Issue、批量迁移、写单测 / 契约测试 | 页面骨架、Storybook 用例 | Claude Code、Aider、Devin |
+| **Out-of-the-Loop（后台）** | AI 全自主，人事后审 | 依赖升级、Lint 修复、日志埋点补齐 | 视觉回归修复、图片压缩 | GitHub Actions + Agent |
+
+**记忆口诀**：**改动越"不可逆"（DB / 生产配置 / 已发布 API），人越要在环里；改动越"可刷新"（UI / 静态资源），越可以放手让 Agent 跑**。
+
+### 9.2 项目 Harnessability 改造：让 Agent 能干活的先决条件
+**残酷真相**：**Agent 表现好不好，一半以上取决于你的项目本身**。同一个 Claude Sonnet 4.5，在有 OpenAPI Schema、Migration 版本化、契约测试的 Spring Boot / FastAPI / Go 项目上一次成功；在祖传 PHP、无类型 Python、SQL 散落各处的项目上反复翻车——不是模型的问题。
+
+**后端项目上手前必做的加固**（1—2 天投入，长期回本）：
+
+| 改造项 | 后端具体做法 | 前端补充 | 收益 |
+| --- | --- | --- | --- |
+| **AGENTS.md / CLAUDE.md** | 写清架构分层、限流规则、DB 分库策略、上下游依赖、禁忌 | 写清设计系统、组件库、路由约定 | Agent 每次都读，不用重复解释 |
+| **强类型 / Schema** | Java / Kotlin / Go / Rust 天然强类型；Python 加 Pydantic + mypy strict；接口 OpenAPI；DB Schema 用 sqlc / Prisma / jOOQ | JS 迁 TS，API Client 由 OpenAPI 生成 | Agent 改动可静态验证 |
+| **一键跑通** | `make test` / `./gradlew check` / `go test ./...` / `pytest -q`；Docker Compose 一键起依赖（DB / Redis / MQ） | `pnpm check`（type + lint + test） | Agent 能自我验证，无需问你 |
+| **测试分层** | 单测 → 契约测试（Pact / Spring Cloud Contract）→ 集成测试（Testcontainers）→ 冒烟 E2E | Vitest + Playwright 冒烟 | 改坏立刻感知 |
+| **Migration 版本化** | Flyway / Liquibase / golang-migrate / Alembic，禁止手改 DB | — | Agent 生成的迁移可 Review、可回滚 |
+| **可观测性打底** | 结构化日志（JSON）+ TraceID + Metrics（Prometheus）+ 关键点埋点 | Sentry / RUM | Agent 自查线上问题有据可依 |
+| **README + ADR** | 记"为什么这么设计"（为什么用消息队列、为什么这个字段冗余） | 记设计规范决策 | Agent 判断边界情况的依据 |
+| **禁忌清单** | 不要动的目录、不要改的历史 Migration、不要引入的库（如 log4j 系列） | 不要用的组件、不要改的样式变量 | 减少反复被 Ban 的产出 |
+
+**AGENTS.md 后端项目最小骨架**（Cursor / Claude Code / Aider 均识别，把 `##` 换成任意标题层级即可）：
+
+```plain
+# 项目名
+一句话说明业务价值
+
+## 技术栈
+Java 21 / Spring Boot 3.3 / MySQL 8 / Redis 7 / Kafka 3.7 / K8s
+
+## 架构分层
+Controller → Service → Repository；DTO / Entity 严格分离
+
+## 目录约定
+src/main/java/... ；migration 只写在 db/migration/V{version}__desc.sql
+
+## 常用命令
+./gradlew bootRun / test / check ；docker compose up -d 起依赖
+
+## DB 与 Migration 纪律
+只用 Flyway 生成新版本；禁止修改历史版本；分库分表键 = user_id
+
+## 上下游契约
+上游：订单中心（gRPC）；下游：MQ topic order.paid.v1（禁止破坏兼容）
+
+## 观测与限流
+所有对外接口必须记 TraceID；Sentinel 限流规则见 config/flow-rules.json
+
+## 禁忌
+禁止在 Controller 直连 DB；禁止在 Service 层 catch Exception 后吞异常；
+禁止使用 SELECT *；禁止跨服务共享 DB
+```
+
+**核心原则**：**AGENTS.md 是给 Agent 看的 onboarding 文档，不是给人看的营销页**——直接、可执行、去水化。
+
+### 9.3 上下文工程实战：给 Agent 什么信息、不给什么
+**Context Engineering 的三层信息源**：
+
+```plain
+项目级（AGENTS.md / CLAUDE.md）——每次都注入
+   ↓
+会话级（@ 引用文件、Schema、日志片段）——本次任务相关
+   ↓
+步骤级（工具调用返回、上一步的产物）——动态累积
+```
+
+**后端任务必须给的**：
+
++ 目标接口 / Service / Repository 的当前代码（`@src/service/OrderService.java`）
++ **相关的 DB Schema / DDL / Migration 历史**（决定是否需要新迁移）
++ **上下游接口契约**（Proto / OpenAPI / Avro）
++ 一个已有的相似实现作为**风格锚点**（分页怎么写、异常怎么抛、日志怎么打）
++ 明确的 Verify（跑什么命令、看什么 Metric、压测阈值）
+
+**前端任务必须给的**：
+
++ 相关组件 / Hook 当前代码
++ 设计稿 / Figma 链接或截图
++ 设计 Token / Theme 变量
++ 已存在的相似组件作为风格锚点
+
+**坚决不要给的（后端尤其）**：
+
++ 整个仓库的目录树（Agent 会自己 `ls` / `grep`，塞进去只是浪费上下文）
++ 完整的错误堆栈但没有复现步骤（先给复现方式，让 Agent 自己拉日志）
++ 生产日志原文（可能含 PII，脱敏后再给；或走审计过的日志 MCP）
++ 20 分钟的思考过程（提炼成三句话）
++ 无关的组织故事（Agent 不 care 需求方是 CEO 还是实习生）
+
+**40% 阈值法则**：**上下文占用超过窗口的 40%，主动 Compact 或开新会话**——超过 40% 后模型注意力显著下降，且后续压缩成本翻倍。后端调试典型场景（贴一大段 SQL EXPLAIN + 一段日志 + 一份 Schema）很容易踩线，务必分批喂。
+
+### 9.4 任务描述的黄金公式：What / Why / Constraint / Verify
+**烂 Prompt 的通病**：只写 What，不写 Why 和 Verify。
+
+**后端场景对照示例**：
+
+<table>
+<tr><td><b>❌ 差</b></td><td><b>✅ 好</b></td></tr>
+<tr><td>
+"帮我加一个用户导出接口"
+</td><td>
+<b>What</b>：在 <code>UserAdminController</code> 加 <code>GET /admin/users/export</code>，返回 CSV 流<br/>
+<b>Why</b>：合规团队每周审计，目前手工 dump DB 出过错；需要审计日志留痕<br/>
+<b>Constraint</b>：用户表 500 万行，禁止一次性 load 到内存（用 <code>ResultSet</code> 流式游标 + <code>fast-csv</code>）；接口需 RBAC 校验 <code>ROLE_AUDIT</code>；写审计日志到 <code>audit_log</code> 表；不引入新依赖<br/>
+<b>Verify</b>：<code>./gradlew test --tests UserAdminControllerTest</code> 全绿；<code>./gradlew jmh -Pincludes=ExportBench</code> 内存峰值 &lt; 200MB；<code>curl</code> 无权限 401、有权限 200
+</td></tr>
+</table>
+
+**Migration 场景对照**：
+
+<table>
+<tr><td><b>❌ 差</b></td><td><b>✅ 好</b></td></tr>
+<tr><td>
+"给 order 表加一个渠道字段"
+</td><td>
+<b>What</b>：为 <code>order</code> 表新增 <code>channel VARCHAR(32) NOT NULL DEFAULT 'unknown'</code>，同步更新 Entity / DTO / Mapper<br/>
+<b>Why</b>：财务对账要按渠道分账；历史数据默认 unknown 由后台脚本回填<br/>
+<b>Constraint</b>：表 3 亿行，禁止在业务时段加锁；用 <code>gh-ost</code> / <code>pt-osc</code> 在线迁移；Migration 分两步——先加列不加索引，回填后再补 <code>KEY idx_channel(channel, ctime)</code>；不影响现有 API 兼容<br/>
+<b>Verify</b>：Flyway 生成 <code>V20260706_1200__add_channel.sql</code>；契约测试 <code>OrderContractTest</code> 全绿；本地 Docker 起表跑通
+</td></tr>
+</table>
+
+**为什么 Why 关键**：Agent 遇到边界情况时（比如"要不要包含已注销用户？软删还是硬删？"），有 Why 才能判断，没有 Why 就会瞎猜或反复问你。
+
+### 9.5 Plan-First 工作流：先要计划、再执行
+**Claude Code 的 Plan Mode / Cursor 的 Composer Plan / Aider 的 architect 模式**都体现同一个原则：**长任务必须先出显式 Plan，Plan 通过 Review 后再执行**。后端任务尤其重要——一次错误的 Migration 或事务边界改动可能就是 P0。
+
+**规范流程**：
+
+```plain
+1. 你描述目标（What / Why / Constraint / Verify）
+2. Agent 输出 Plan：
+   - 涉及文件（Controller / Service / Repository / Migration / 测试）
+   - DB / MQ / 缓存的变更点
+   - 兼容性影响（是否破坏 API 契约、是否需要灰度）
+   - 回滚方案
+   - 验证方案（哪些测试要跑、哪些 Metric 要看）
+3. 你 Review Plan：改错了叫停、走偏了纠正
+4. Plan 通过 → Agent 按步执行
+5. 每步执行后跑 Verify
+6. 出问题回到步骤 2 重新规划
+```
+
+**判定标准**：**任何一条命中就必须先出 Plan**——
+
++ 涉及 3 个以上文件
++ 涉及 DB Migration / Schema 变更
++ 涉及跨服务契约（Proto / OpenAPI / MQ Topic）
++ 涉及事务、并发、幂等
++ 涉及生产配置或部署
+
+低于这些阈值的任务（改一个纯函数、加一段日志）直接干效率更高。
+
+### 9.6 Trust But Verify：信任但必须验证（后端专属陷阱）
+**2026 年最贵的 Bug**：**开发者盲目 accept Agent 的输出，看起来对，跑起来错**。后端由于失败成本高，验证纪律必须比前端更严。
+
+**必须做的四道验证**：
+
+| 层级 | 后端做法 | 前端做法 | 谁负责 |
+| --- | --- | --- | --- |
+| **静态验证** | 类型检查、Lint、SpotBugs / SonarQube、SQL Lint | tsc / ESLint / stylelint | Agent 跑，你抽查 |
+| **单元 + 契约** | JUnit / pytest + Pact / Spring Cloud Contract | Vitest + Storybook | Agent 跑，你 Diff Review |
+| **集成 / E2E** | Testcontainers 起真实 DB / Kafka；对上下游打契约 | Playwright | 你亲自跑一次 |
+| **人 Review Diff** | **每一行都看**，尤其 Migration / 事务 / 权限 | 每一行都看，尤其安全相关 | 你，无法转移 |
+
+**Agent 会犯的后端典型错误**（每一个都在 2025—2026 一线团队真实翻过车）：
+
++ **SQL 注入**：拼字符串而不是用参数化查询——Agent 复读 Stack Overflow 老代码
++ **N+1 查询**：循环里发 SQL，看起来对但压测崩
++ **事务边界丢失**：把 `@Transactional` 忘了加，或加在 private 方法上（Spring 代理不生效）
++ **幂等性缺失**：MQ 消费者没做去重，重放消息导致脏数据
++ **软删硬删混淆**：不看 `deleted_at` 直接 `DELETE`，破坏审计链
++ **锁表 Migration**：`ALTER TABLE` 直接跑在几亿行的表上
++ **缓存一致性**：改了 DB 忘了删缓存 / 或反过来先删缓存后改 DB 出现窗口期
++ **上下游契约破坏**：字段改名或删字段，未经过版本兼容处理
++ **权限校验遗漏**：新增接口忘加鉴权注解
++ **配置泄漏**：把 secret 写进代码或 <code>application.yml</code> 提交
++ **日志打敏感数据**：手机号、身份证、密码原文
++ **编造不存在的 API / 库函数**（Hallucination）
++ **悄悄改了不相关的文件**（Scope Creep）
++ **把测试改成永远通过**（Test Cheating，例如把断言注释掉）
++ **忽略 AGENTS.md 里明确写过的禁忌**
+
+**Diff Review 优先级**（时间有限时按此顺序看）：
+
+```plain
+1. Migration / DDL 文件         ← 最高优先级，不可回滚代价最大
+2. 权限 / 鉴权 / RBAC 相关       ← 安全红线
+3. 事务边界 / 并发控制           ← 数据一致性红线
+4. 上下游接口 / MQ Schema        ← 契约红线
+5. 缓存 / 幂等                  ← 生产稳定性
+6. 业务逻辑                     ← 单测能兜住
+7. 日志 / 埋点                  ← 影响可观测性但不影响功能
+8. 测试代码                     ← 兜底
+```
+
+**IDE 快捷键值得练熟**：Cursor 的 Diff View、Claude Code 的 `--diff-mode`、GitHub PR 的 Files Changed 页——**看 Diff 的效率决定了你能否负担 Agent 的产出速度**。
+
+### 9.7 工具与生态选择（2026 主流 · 后端偏向）
+**IDE 内嵌 vs CLI Agent 各自优势**：
+
+| 场景 | 首选 | 备选 |
+| --- | --- | --- |
+| **交互式探索、边写边聊** | Cursor / Windsurf | GitHub Copilot Chat |
+| **明确任务、后台自主执行** | Claude Code / Aider | Cursor Composer Agent |
+| **企业内网 / 合规敏感** | Claude Code + 私有网关 | 自研 Harness + 开源模型（Qwen / DeepSeek） |
+| **单文件补全、纯提速** | GitHub Copilot / Tabnine | Cursor Tab |
+| **异步长任务（跑测试、升级依赖、迁库）** | Devin / Claude Code Background | GitHub Actions + Agent |
+| **前端页面 / 组件设计** | v0 / Cursor + shadcn MCP | Claude Artifacts |
+
+**后端常用的 MCP Server / Tool 生态**（2026 已经踩过大量坑）：
+
+| 类型 | 代表 | 使用纪律 |
+| --- | --- | --- |
+| **数据库 MCP** | Postgres / MySQL / MongoDB MCP Server | **只读账号 + 白名单 Schema**；生产库禁止直连 |
+| **API 探针 MCP** | HTTP Fetch / Postman MCP | 生产环境走审批网关 |
+| **K8s / 云 MCP** | kubectl-ai / AWS MCP | **只读 kubeconfig**；变更操作走 GitOps 而不是 Agent 直接 apply |
+| **日志 / 监控 MCP** | Grafana / ELK / Sentry MCP | 脱敏后的只读接入 |
+| **代码搜索 MCP** | Sourcegraph / GitHub MCP | 组织级只读 Token |
+| **消息队列 MCP** | Kafka MCP | 只读 topic 元数据；禁止直接 produce 到生产 |
+
+**四条通用纪律**：
+
++ **来源审计**：只用官方或知名开源社区 MCP Server；第三方来源必须读源码
++ **权限最小化**：DB MCP 只读、K8s MCP 只读、写操作走审批工作流
++ **沙箱运行**：不给 Agent 直连生产 DB / 生产分支的权限
++ **审计日志**：所有 MCP 调用可回放、可追责
+
+**团队级沉淀**：把重复出现的最佳实践固化为 **Slash Command / Custom Skill / Hook**——后端场景例子：
+
++ `/gen-migration` — 按团队规范生成 Flyway 迁移
++ `/review-sql` — SQL 审查（是否用参数化、是否走索引、是否有 SELECT *）
++ `/gen-contract-test` — 按 OpenAPI 生成 Pact 契约测试
++ `/check-idempotency` — 检查 MQ 消费者是否有幂等保护
++ `/pr-checklist` — 后端 PR 自检清单（Migration / 权限 / 事务 / 日志 / 兼容性）
+
+前端也可以有 `/gen-component`、`/a11y-check`、`/perf-budget-check` 等——但**从个人生产力到团队生产力的关键跃迁就是这一步**。
+
+### 9.8 常见反模式（2026 一线团队踩坑汇总 · 后端为主）
+| 反模式 | 表现 | 纠正 |
+| --- | --- | --- |
+| **一次让 Agent 改 20 个文件** | "顺手把整个模块重构一下" | 拆成 3—5 个文件粒度的多次任务 |
+| **无测试项目让 Agent 大改** | 老服务没测试直接让 Agent 改核心逻辑 | 先让 Agent 补单测 + 契约测试，你 Review 后再改代码 |
+| **Migration 直接让 Agent 跑** | Agent 生成 SQL 就 apply | Migration 必须由人执行；Agent 只生成脚本 |
+| **锁表 SQL 未审即上** | `ALTER` 大表未走在线 DDL | 强制走 gh-ost / pt-osc；Prompt 里明确表规模 |
+| **让 Agent 直接连生产 DB / K8s** | 图方便给 Agent 生产账号 | 只读 + 白名单 Schema；写操作走 GitOps |
+| **只看结果不看 Diff** | "跑通了就 merge" | Diff 必看，尤其 Migration / 权限 / 事务 |
+| **让 Agent 直接 push main** | 图省事跳过 PR | 强制 PR + CI + Review，永不例外 |
+| **迷信 Agent 的自评** | Agent 说"已修复"就当真 | 你亲自跑一次 Verify + 看 Metric |
+| **忽视上下文成本** | 一个会话贴 3 段日志 + 5 个 Schema 聊两小时 | 超 40% 就 Compact 或开新会话 |
+| **贴生产日志不脱敏** | PII / Token 直接进模型 | 走脱敏管道或审计过的日志 MCP |
+| **复制粘贴报错就完事** | 只贴堆栈，不给复现 | 给出复现命令、期望行为、当前行为 |
+| **不写 AGENTS.md** | 每次都从零解释项目 | 一次性投入 2 小时，永久受益 |
+| **让 Agent 写 CI 又让它自己 Review** | 自评自绕 | CI 规则、代码 Review 分开由不同角色（人或 Agent）负责 |
+| **跳过 Plan 直接执行** | "简单任务不用规划" | 涉及 Migration / 事务 / 契约 就出 Plan |
+| **前端过度谨慎、后端过度激进** | 反过来了 | 后端严于前端——失败成本决定纪律 |
+
+### 9.9 团队与组织落地：从个人到工程能力
+**个人熟练 ≠ 团队高效**。2026 年领先的**后端 / 平台**团队共同做法：
+
++ **AGENTS.md 版本化**：进 Git、跟代码一起演化，PR Review 也 Review 它；服务化架构下每个微服务有自己的 AGENTS.md
++ **Prompt / Skill 库**：团队共享的 Slash Command 和 Custom Skill 集中管理（monorepo 或独立仓库均可）
++ **权限分级三段式**：
+  - 本地开发：Agent 自主度最高，随便试
+  - 预发环境：HITL，关键操作人工审批
+  - 生产环境：Out-of-the-Loop，任何变更走 GitOps + 多重审批
++ **CI 集成**：Agent 提 PR，CI 门禁必须包含——单测 / 覆盖率 / Lint / **SQL Lint** / **Migration 审查** / **契约测试** / SCA（依赖漏洞）/ SAST（代码扫描）/ License Check
++ **DBA / SRE 边界清晰**：Migration 生成可以 Agent 做，**执行必须人做**；生产变更 Agent 只能生成 PR，不能直接 apply
++ **Metrics 建立**：**AI 参与率、AI 产出 PR 合并率、Diff Review 时间、Agent 触发的回滚数、生产事故是否与 AI 产物相关**——没有度量就没有改进
++ **Onboarding 更新**：新员工第一周必修"如何用好本项目的 Coding Agent"，AGENTS.md 就是教材
++ **前端团队协同**：BFF / SDK / OpenAPI 由后端主导契约，前端 Agent 消费——**契约在中间，两边都以契约为锚点**
+
+**度量红线**：**Agent 触发的生产回滚率**必须持续下降；如果这个数字在涨，说明团队走得太快、Harness 跟不上，需要减速加固。
+
+### 9.10 能力升级四阶模型
+```plain
+L1 · Autocomplete 阶段（新手）
+    工具：Copilot / Tabnine
+    产能：+10%—20%（后端 Boilerplate、DTO / VO 补全）
+    风险：低
+    重点：习惯 AI 在旁边；学会拒绝错误建议
+
+L2 · Copilot 对话阶段（熟练）
+    工具：Cursor Chat / Windsurf / Claude Chat
+    产能：+30%—80%（陌生框架、SQL 优化、单测生成）
+    风险：中（可能盲目 accept）
+    重点：写清 What / Why / Constraint / Verify
+
+L3 · Agent 自主阶段（进阶）
+    工具：Claude Code / Aider / Cursor Composer Agent
+    产能：+2×—3×（明确 Issue、批量迁移、契约测试补齐）
+    风险：中高（Agent 可能大范围改错、Migration 出事）
+    重点：Plan-First、Diff Review、Trust But Verify、只读 MCP
+
+L4 · Agent 团队协作阶段（专家）
+    工具：Multi-Agent Harness / Devin / 自建 AgentOS
+    产能：+3×—10×（依赖升级、大规模重构、跨服务改造）
+    风险：高（级联错误、审计缺失、契约破坏）
+    重点：Harness 工程、可观测、GitOps 集成、治理框架
+```
+
+**升级建议**：**逐阶爬**，别跳级。跳到 L3 但没建立 Diff Review 习惯的开发者，产出质量常常不如 L2。跳到 L4 但没搭 Observability 和 GitOps 的团队，翻车时无从追责。
+
+### 9.11 一句话总结
+> **模型决定上限，Harness 决定底线，你决定 Delta**——同样的 Claude / GPT，用得好的后端开发者产能是用得差的 5—10 倍。差距不在工具，在**心智模型、项目底子、任务描述、验证纪律**这四件事上。
+
+**十条最重要的实战守则（后端优先）**：
+
+1. AGENTS.md 是最高杠杆的一次性投入——把领域约束、契约、禁忌写清楚
+2. 强类型 + 一键测试 + Migration 版本化 = 项目 Harnessability 三件套
+3. What / Why / Constraint / Verify 四要素齐全再交给 Agent
+4. 涉及 Migration / 事务 / 契约 / 3 个以上文件 → 必须先出 Plan
+5. Diff Review 不可省略；优先级：Migration > 权限 > 事务 > 契约 > 缓存 > 业务 > 日志 > 测试
+6. 上下文超过 40% 立刻 Compact；日志脱敏后再喂
+7. 生产 DB / K8s / MQ 一律只读 MCP，写操作走 GitOps + 人工审批
+8. Trust But Verify——Agent 的自评永远打折扣，尤其 SQL 和并发
+9. 团队沉淀（Skill / Command / Hook）比个人技巧更有杠杆
+10. 后端严于前端——失败成本决定纪律；逐阶爬升，L1→L4，别跳级
+
+
+---
+
 ## 附录 A：AI 关键论文 / 事件时间线
 | 年份 | 论文 / 事件 | 意义 |
 | --- | --- | --- |
