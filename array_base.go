@@ -323,7 +323,6 @@ func threeSumTarget(nums []int, target int) [][]int {
 	var result [][]int
 
 	twoSumTarget := func(nums []int, start, target int) [][]int {
-		sort.Ints(nums)
 		var lo, hi = start, len(nums) - 1
 		var res [][]int
 		for lo < hi {
@@ -425,9 +424,7 @@ func NewNumArray(nums []int) NumArray {
 	for i := 1; i < len(preSum); i++ {
 		preSum[i] += preSum[i-1] + nums[i-1]
 	}
-	return NumArray{
-		PreSum: preSum,
-	}
+	return NumArray{PreSum: preSum}
 }
 
 func (n *NumArray) SumRange(left int, right int) int {
